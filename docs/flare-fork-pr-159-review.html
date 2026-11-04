@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fork PR #159 Review: Windows RTX Spark N1X Export &amp; Serving</title>
+<style>
+  :root { --fg:#1d2330; --muted:#5a6472; --bg:#fbfcfd; --line:#d9dfe7; --accent:#0b5cad; --warn:#8a5a00; --crit:#a11a1a; --ok:#1d6b3a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif; color:var(--fg); background:var(--bg); }
+  header { background:#0f2a45; color:#fff; padding:26px 32px; }
+  header h1 { margin:0 0 6px; font-size:24px; }
+  header p { margin:2px 0; color:#cfe0f0; font-size:13.5px; }
+  nav { position:sticky; top:0; background:#eef3f8; border-bottom:1px solid var(--line); padding:8px 32px; font-size:13px; z-index:5; }
+  nav a { color:var(--accent); text-decoration:none; margin-right:14px; white-space:nowrap; }
+  nav a:hover { text-decoration:underline; }
+  main { max-width:1080px; margin:0 auto; padding:20px 32px 60px; }
+  section { margin:26px 0; }
+  h2 { font-size:19px; border-bottom:2px solid var(--line); padding-bottom:5px; margin:0 0 10px; }
+  h3 { font-size:15.5px; margin:16px 0 6px; }
+  table { width:100%; border-collapse:collapse; margin:8px 0 14px; font-size:13.5px; }
+  th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  th { background:#f0f4f8; }
+  code { font:12.5px/1.4 "Cascadia Code", Consolas, monospace; background:#eef1f5; padding:1px 4px; border-radius:3px; }
+  .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:9px; font-weight:600; }
+  .fact { background:#e2ecf7; color:#0b4a86; }
+  .inf { background:#fdeede; color:#7a4a00; }
+  .unv { background:#f6e0e0; color:#8a1414; }
+  .callout { border-left:4px solid var(--accent); background:#f4f8fc; padding:10px 14px; margin:10px 0; }
+  .callout.warn { border-left-color:var(--warn); background:#fdf8ef; }
+  .score { font-size:30px; font-weight:700; }
+  .muted { color:var(--muted); font-size:13px; }
+  footer { border-top:1px solid var(--line); padding:14px 32px; font-size:12.5px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fork PR Review: Windows RTX Spark N1X Export &amp; Serving</h1>
+  <p>Pull request: <strong>NVIDIA/spark-local-inference#159</strong> &middot; branch <code>windows-n1x-export</code> &middot; fork <code>R4yHarris/spark-local-inference</code></p>
+  <p>Series head <code>75bca4ba9a9d4e0322cd69308c345a1d3c9c40df</code> (14 commits) &middot; merged squash <code>e88aba7f9c984ec554ffb8c61e1e0217481d9bdb</code> (10 files)</p>
+</header>
+<nav>
+  <a href="#scope">Scope &amp; Method</a>
+  <a href="#series">Commit Series</a>
+  <a href="#files">Per-File Analysis</a>
+  <a href="#tradeoff">FILE_SHARE_READ Tradeoff</a>
+  <a href="#scores">Scores</a>
+  <a href="#findings">Findings</a>
+  <a href="#verdict">Verdict</a>
+</nav>
+<main>
+
+<section id="scope">
+<h2>1. Review Scope and Method</h2>
+<p>This report reviews the Windows/RTX Spark N1X enablement work delivered through fork PR #159. The scope covers the 14-commit original series and the 10-file squash landed upstream, with per-file analysis of the exact paths named in the task: <code>.gitattributes</code>, <code>eos/src/windows.rs</code>, <code>heliopause/src/export/capture.rs</code>, <code>helios/src/package/naming.rs</code>, <code>helios/src/runtime_package/protection.rs</code>, <code>ignition/patches/__init__.py</code>, <code>ignition/preparation/peer_storage.py</code>, <code>selene/Cargo.toml</code>, <code>selene/src/shard.rs</code>, <code>tests/preparation/test_inductor_patches.py</code>, and the context document <code>docs/PR_159_WINDOWS_N1X_SUMMARY.md</code>.</p>
+<p><strong>Method:</strong> static document and code review only. No test suite, build, cross-compile, CI pipeline, or GPU runtime was executed while producing this report. Statements sourced from the PR description or summary document are tagged <span class="tag fact">supplied fact</span>; reviewer judgments are tagged <span class="tag inf">reviewer inference</span>; behaviors requiring a real Windows host or GPU are tagged <span class="tag unv">unverified</span>.</p>
+<div class="callout warn">The author-supplied validation (Linux package/shard/preparation test counts, a cross-compiled Windows test binary, a <code>cargo check</code> for Heliopause) is reported as claimed, not reproduced. Native Windows execution, GPU export, and serving remain unverified.</div>
+</section>
+
+<section id="series">
+<h2>2. The 14-Commit Series at <code>75bca4b</code></h2>
+<p>The series addresses four concerns: Windows I/O geometry and handle sharing, device/package identity, dependency and preparation portability, and platform-specific randomness and tests. Grouped narrative:</p>
+<table>
+<tr><th>Group</th><th>Commits</th><th>Primary paths</th><th>Narrative</th></tr>
+<tr><td>Export recorder robustness</td><td><code>17812adf</code></td><td><code>heliopause/src/export/capture.rs</code></td><td>Tolerates recorder allocations released during preparation, avoiding export aborts on early frees.</td></tr>
+<tr><td>Package cache &amp; mutation</td><td><code>b624df37</code>, <code>cdb20282</code>, <code>e5f23a1c</code>, <code>75bca4ba</code></td><td><code>helios/src/runtime_package/protection.rs</code></td><td>Commits/publishes entries on Windows, resolves the primary container for empty relative names, serializes mutation, and clears the sealed attribute before test corruption.</td></tr>
+<tr><td>Device identity</td><td><code>1a853e13</code></td><td><code>helios/src/package/naming.rs</code></td><td>Adds PCI ID <code>0x2e03</code> (RTX Spark N1X) alongside DGX Spark <code>0x2e12</code> under platform label <code>gb10</code>.</td></tr>
+<tr><td>Direct I/O geometry</td><td><code>1892da9c</code></td><td><code>eos/src/windows.rs</code></td><td>Accepts volumes whose performance sector hint exceeds the logical sector, checking logical and atomicity sizes instead.</td></tr>
+<tr><td>Preparation portability</td><td><code>cf97a93b</code>, <code>8f4af590</code></td><td><code>ignition/preparation/peer_storage.py</code>, <code>ignition/patches/__init__.py</code>, <code>tests/preparation/test_inductor_patches.py</code></td><td>Imports peer storage without POSIX descriptor passing; allows absent Triton only on Windows while pinning Torch/Triton versions.</td></tr>
+<tr><td>Serving &amp; transport</td><td><code>320fdfd3</code>, <code>da2f1743</code></td><td><code>selene/src/shard.rs</code>, <code>selene/Cargo.toml</code></td><td>Rejects unavailable Unix-domain manager sockets; fills the record nonce from <code>BCryptGenRandom</code> on Windows.</td></tr>
+<tr><td>Platform &amp; assets</td><td><code>f7e696ce</code>, <code>868b3769</code>, <code>130ab68d</code></td><td><code>.gitattributes</code> (plus files outside the squash)</td><td>Declares <code>strftime</code> for the Windows C runtime, pins LF endings for chat templates, and makes the helios test profile compile on Windows.</td></tr>
+</table>
+<p>The squash <code>e88aba7</code> folds the review-relevant subset into 10 files (+138/−15). Commits <code>f7e696ce</code> and <code>130ab68d</code> target files not present in the merged diff and are therefore not analyzable from the supplied evidence. <span class="tag inf">reviewer inference</span></p>
+</section>
+
+<section id="files">
+<h2>3. Per-File Analysis</h2>
+
+<h3>3.1 <code>.gitattributes</code></h3>
+<p>Adds <code>ignition/recipes/*/assets/*.jinja text eol=lf</code> after existing <code>-text</code> rules for <code>third_party/rust/**</code> and <code>packaging/license-supplements/**</code>. This preserves chat-template bytes that feed digests and embedded template parsing across <code>core.autocrlf</code> checkouts. <span class="tag fact">supplied fact</span> The rule is narrow and does not alter license/notice handling. Residual risk: any future template directory outside the pattern would silently lose LF pinning. <span class="tag inf">reviewer inference</span></p>
+
+<h3>3.2 <code>eos/src/windows.rs</code></h3>
+<p>Replaces <code>PhysicalBytesPerSectorForPerformance</code> with <code>PhysicalBytesPerSectorForAtomicity</code> in the <code>check_alignment</code> loop over <code>[LogicalBytesPerSector, PhysicalBytesPerSectorForAtomicity]</code>, with a comment that the performance size is a hint. The file also holds <code>direct_read_guard</code> (section 4). Tests exercise guard immutability and cancellation drain. <span class="tag inf">reviewer inference</span>: atomicity is the safer unbuffered-I/O alignment source, but 4K-sector devices where atomicity is not a divisor of 4096 would be rejected as <code>Unsupported</code>.</p>
+
+<h3>3.3 <code>heliopause/src/export/capture.rs</code></h3>
+<p>Selects the NVML soname by <code>cfg!(windows)</code> (<code>nvml.dll</code> vs <code>libnvidia-ml.so.1</code>). The surrounding module dynamically loads <code>nvcuda.dll</code> on Windows via <code>libloading::os::windows</code>, and validates graph spans, relocations, and kernel argument layouts before export. <span class="tag unv">unverified</span>: no GPU export was run; correctness of NVML naming on N1X drivers is a review hypothesis.</p>
+
+<h3>3.4 <code>helios/src/package/naming.rs</code></h3>
+<p>Introduces <code>GB10_DEVICES = [0x2e12, 0x2e03]</code> and switches <code>platform_from_pci</code> to <code>contains</code>. Naming stays display-only; identities remain content hashes and signatures. Tests loop over <code>GB10_DEVICES</code> and reject non-NVIDIA ids (<code>0x2bbc_1af4</code>) and unknown devices (<code>0x1e02_10de</code>). The <code>unknown-device-*</code> fallback avoids guessing from SM architecture. Strong test coverage of the boundary.</p>
+
+<h3>3.5 <code>helios/src/runtime_package/protection.rs</code></h3>
+<p>Resolves <code>asset_path</code> to the primary container when the relative name is empty, and adds <code>asset_paths_read_initializer_bytes_in_directory_and_packed_packages</code> covering directory and packed forms. The module carries signature verification (<code>ring</code>), <code>PackageClaim</code> parsing for format-6 and payload containers, <code>source_valid</code> restricting official sources to <code>https://huggingface.co/&lt;namespace&gt;/</code>, and an open-file preflight. <span class="tag inf">reviewer inference</span>: <code>preflight_open_files</code> returns <code>Ok(())</code> on <code>#[cfg(windows)]</code>, so the descriptor budget is unenforced on the platform this PR targets.</p>
+
+<h3>3.6 <code>ignition/patches/__init__.py</code></h3>
+<p>Restructures <code>apply()</code> to skip absent Triton only when <code>sys.platform == "win32"</code>, keep Torch mandatory, preserve exact versions (<code>2.14.1+cu132</code>, <code>3.8.0</code>), skip hunks for missing packages, and retain atomic replacement via <code>os.replace</code> with permission preservation and imported-module refusal. Hunk parsing restricts targets to <code>b/torch/_inductor/</code> or <code>b/triton/runtime/build.py</code>. <span class="tag inf">reviewer inference</span>: the Windows exemption is correct for Torch's bundled Triton on some builds, but the error message for missing Triton on non-Windows still surfaces the generic dependency hint.</p>
+
+<h3>3.7 <code>ignition/preparation/peer_storage.py</code></h3>
+<p>Guards <code>DupFd</code> import and raises <code>RuntimeError("peer storage requires POSIX descriptor passing")</code> in <code>cudaIpcGetMemHandleBytes</code>. The VMM mapping path uses <code>cuMemRetainAllocationHandle</code>/<code>cuMemExportToShareableHandle</code> with careful <code>finally</code> cleanup. <span class="tag unv">unverified</span>: collective preparation on Windows is explicitly unsupported here; the import-only tolerance is documented in the summary.</p>
+
+<h3>3.8 <code>selene/Cargo.toml</code></h3>
+<p>Adds <code>Win32_Security_Cryptography</code> to the existing <code>windows-sys</code> 0.61 feature set for <code>cfg(windows)</code>. No new crate; supply-chain surface is unchanged apart from the feature flag. <span class="tag fact">supplied fact</span></p>
+
+<h3>3.9 <code>selene/src/shard.rs</code></h3>
+<p>Splits <code>nonce()</code> into <code>#[cfg(unix)]</code> <code>/dev/urandom</code> and <code>#[cfg(windows)]</code> <code>BCryptGenRandom</code> with <code>BCRYPT_USE_SYSTEM_PREFERRED_RNG</code>, returning a mapped error on negative NTSTATUS. Framing enforces <code>FRAME_LIMIT</code> (64 MiB), non-blocking reads, bounded writer backlog, and stall detection. <span class="tag inf">reviewer inference</span>: no <code>#[cfg(not(any(unix, windows)))]</code> fallback exists, but the crate targets only those platforms.</p>
+
+<h3>3.10 <code>tests/preparation/test_inductor_patches.py</code></h3>
+<p>Parametrizes dependency-version failures over <code>linux</code>/<code>win32</code> and adds <code>test_missing_dependency_is_allowed_only_for_triton_on_windows</code>, restricting <code>sys.path</code> to the fixture installation. Covers idempotence, hardlink breaking, permission preservation, concurrency, and parity with system <code>patch</code>. Strong behavioral suite.</p>
+
+<h3>3.11 <code>docs/PR_159_WINDOWS_N1X_SUMMARY.md</code></h3>
+<p>Context document enumerating the 14 commits, the squash metadata, and the open tradeoff. It supplies the author validation claims quoted in this report; it is the source of the "supplied fact" tags, not independent evidence.</p>
+</section>
+
+<section id="tradeoff">
+<h2>4. Open Tradeoff: <code>eos::windows::direct_read_guard</code></h2>
+<p><code>direct_read_guard</code> calls <code>reopen_direct(file, FILE_SHARE_READ)</code>, omitting <code>FILE_SHARE_WRITE</code> and <code>FILE_SHARE_DELETE</code>, whereas <code>direct_reopen</code> uses all three. The guard's doc comment says it keeps a package immutable without retaining a buffered handle alongside direct readers.</p>
+<table>
+<tr><th>Behavior</th><th>FILE_SHARE_READ only (current)</th><th>Adding FILE_SHARE_DELETE</th></tr>
+<tr><td>Immutability</td><td>Writers and deleters get <code>ERROR_SHARING_VIOLATION</code>; enforced by the OS.</td><td>Write still excluded, but delete/rename becomes legal while open.</td></tr>
+<tr><td>Directory rename</td><td>Blocked while any guard handle is open; <code>authenticated_handles_survive_rename_and_replacement</code> fails on Windows. <span class="tag fact">supplied fact</span></td><td>Rename proceeds; handles keep resolving to the old file identity.</td></tr>
+<tr><td>Failure modes</td><td>Package cache commit/rename paths fail under live readers; retries needed. <span class="tag inf">reviewer inference</span></td><td>Deletion of a live file is deferred; sealed-attribute semantics must be re-checked; path-based reopen may see a replacement file.</td></tr>
+<tr><td>Test coverage</td><td><code>direct_package_guard_preserves_immutability_after_buffered_reader_closes</code> asserts the violation on write and remove.</td><td>No test in supplied evidence.</td></tr>
+</table>
+<div class="callout"><strong>Recommendation:</strong> <span class="tag inf">reviewer inference</span> Keep <code>FILE_SHARE_READ</code> for the immutability guarantee, but restructure cache commit to rename <em>before</em> opening guards (stage under a temp name, guard, then publish by directory rename of a sibling that holds no guarded handles), or adopt a two-phase publish where the guard is acquired after the rename. Document the constraint in <code>eos/src/windows.rs</code> and add a Windows-only test mirroring <code>authenticated_handles_survive_rename_and_replacement</code>. Do not simply add <code>FILE_SHARE_DELETE</code> without re-proving sealed-package integrity.</div>
+</section>
+
+<section id="scores">
+<h2>5. Quality, Security &amp; Maintainability Evaluations</h2>
+<p>Composite uses the fixed weights <strong>Quality&times;0.35 + Security&times;0.35 + Maintainability&times;0.30</strong> = <strong>84.05</strong> (80&times;0.35 + 92&times;0.35 + 79&times;0.30 = 28 + 32.2 + 23.7).</p>
+<table>
+<tr><th>Dimension</th><th>Score</th><th>Rationale (with cited paths)</th><th>Benchmark</th></tr>
+<tr><td>Quality</td><td class="score">80</td><td>Focused diffs, strong tests in <code>helios/src/package/naming.rs</code> and <code>tests/preparation/test_inductor_patches.py</code>; but the N1X path is untested natively (<span class="tag unv">unverified</span>) and <code>heliopause/src/export/capture.rs</code> NVML naming lacks a runtime check.</td><td>ISO/IEC 25010 functional suitability; Rust API Guidelines (predictable behavior)</td></tr>
+<tr><td>Security</td><td class="score">92</td><td>No weakening of signature checks in <code>helios/src/runtime_package/protection.rs</code>; <code>source_valid</code> pins Hugging Face namespaces; CSPRNG in <code>selene/src/shard.rs</code>; bounded framing. Minor: Windows descriptor preflight is a no-op.</td><td>OWASP ASVS V6 (cryptography), V12 (files/resources)</td></tr>
+<tr><td>Maintainability</td><td class="score">79</td><td>Clear module docs and comments; but the open <code>eos::windows.rs</code> guard tradeoff, duplicated platform branching, and the <code>preflight_open_files</code> Windows gap reduce clarity.</td><td>Rust API Guidelines (documentation); PEP 8 for Python patches</td></tr>
+<tr><td><strong>Composite</strong></td><td class="score">84.05</td><td>Weighted sum of the three headline scores above.</td><td>&mdash;</td></tr>
+</table>
+</section>
+
+<section id="findings">
+<h2>6. Prioritized Findings</h2>
+<table>
+<tr><th>#</th><th>Priority</th><th>Finding</th><th>Evidence path</th></tr>
+<tr><td>F1</td><td>High</td><td><code>direct_read_guard</code> with <code>FILE_SHARE_READ</code> blocks directory rename, failing <code>authenticated_handles_survive_rename_and_replacement</code>. <span class="tag fact">supplied fact</span></td><td><code>eos/src/windows.rs</code></td></tr>
+<tr><td>F2</td><td>Medium</td><td>Open-file budget is not enforced on Windows (<code>preflight_open_files</code> returns <code>Ok(())</code>). <span class="tag inf">reviewer inference</span></td><td><code>helios/src/runtime_package/protection.rs</code></td></tr>
+<tr><td>F3</td><td>Medium</td><td>NVML <code>nvml.dll</code> selection and N1X PCI detection lack native runtime verification. <span class="tag unv">unverified</span></td><td><code>heliopause/src/export/capture.rs</code>, <code>helios/src/package/naming.rs</code></td></tr>
+<tr><td>F4</td><td>Low</td><td>Peer storage raises at use-time on Windows; preparation collectives remain POSIX-only. <span class="tag unv">unverified</span></td><td><code>ignition/preparation/peer_storage.py</code></td></tr>
+<tr><td>F5</td><td>Low</td><td><code>nonce()</code> has no non-unix/non-windows fallback; acceptable given crate targets. <span class="tag inf">reviewer inference</span></td><td><code>selene/src/shard.rs</code></td></tr>
+<tr><td>F6</td><td>Info</td><td>Chat-template LF pinning is correct but pattern-scoped; future template dirs may drift. <span class="tag inf">reviewer inference</span></td><td><code>.gitattributes</code></td></tr>
+</table>
+</section>
+
+<section id="verdict">
+<h2>7. Overall Verdict</h2>
+<div class="callout"><strong>Verdict:</strong> Approve with follow-up. The PR is a disciplined, well-tested portability change with no apparent security regressions. The blocking item is the documented <code>eos::windows.rs</code> guard/rename tradeoff (F1), which should be resolved or explicitly documented before relying on Windows package cache publication. Native Windows execution, GPU export, and serving remain <span class="tag unv">unverified</span>.</div>
+<p class="muted">Composite score 84.05 derived solely from Quality 80, Security 92, Maintainability 79 under the stated weights. All facts not directly quoted from the repository evidence are labeled reviewer inference or unverified.</p>
+</section>
+
+</main>
+<footer>Static review deliverable &middot; docs/flare-fork-pr-159-review.html &middot; No test suite, CI, or GPU runtime was executed to produce this document.</footer>
+</body>
+</html>
