@@ -214,12 +214,25 @@ impl Drop for Pinned {
     }
 }
 
+/// Top-level `flare download` layout directories, which are not evictable units.
+pub const RESERVED_ENTRIES: [&str; 7] = [
+    "blobs", "locks", "models", "origins", "refs", "sources", "staging",
+];
+
+fn reserved(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| RESERVED_ENTRIES.iter().any(|reserved| name == *reserved))
+}
+
 /// Remove a kind directory's units that nothing pins, leaving transfers in progress.
 pub fn evict(directory: &Path, pins: &Pins) -> Result<Vec<PathBuf>, Failure> {
     let pins = pins.lock().unwrap();
     let mut removed = Vec::new();
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
+        if reserved(&path) {
+            continue;
+        }
         let hidden = path
             .file_name()
             .is_none_or(|name| name.to_string_lossy().starts_with('.'));
@@ -1914,5 +1927,68 @@ mod entry_path_tests {
         assert!(entry(cache, "packages", "../escape/file").is_err());
         assert!(entry(cache, "bin", "nested/tool").is_err());
         assert!(entry(cache, "bin", "tool").is_ok());
+
+        let temporary = tempfile::tempdir().unwrap();
+        let packages = temporary.path().join("packages");
+        fs::create_dir_all(&packages).unwrap();
+        let mut layout = Vec::new();
+        for name in RESERVED_ENTRIES {
+            let path = packages.join(name);
+            fs::create_dir_all(&path).unwrap();
+            layout.push(path);
+        }
+        fs::write(packages.join("blobs").join("payload.safetensors"), b"blob").unwrap();
+        fs::create_dir_all(packages.join("models").join("nested")).unwrap();
+        fs::write(packages.join("staging").join("partial"), b"partial").unwrap();
+
+        let unit_a = packages.join("export-rank1");
+        fs::create_dir_all(unit_a.join("deployments")).unwrap();
+        fs::write(unit_a.join("model.safetensors"), b"unit").unwrap();
+        let unit_b = packages.join("blobs-extra");
+        fs::create_dir_all(&unit_b).unwrap();
+        let pinned_dir = packages.join("pinned-rank");
+        fs::create_dir_all(&pinned_dir).unwrap();
+        let pinned_file = packages.join("pinned-file");
+        fs::write(&pinned_file, b"pinned").unwrap();
+        let hidden_dir = packages.join(".transfer");
+        fs::create_dir_all(&hidden_dir).unwrap();
+        let hidden_file = packages.join(".hidden-file");
+        fs::write(&hidden_file, b"hidden").unwrap();
+
+        let pins = Pins::default();
+        let mut pinned = Pinned::new(&pins);
+        pinned.pin(pinned_dir.clone());
+        pinned.pin(pinned_file.clone());
+
+        let removed = evict(&packages, &pins).unwrap();
+        let mut expected = vec![unit_a.clone(), unit_b.clone()];
+        expected.sort();
+        let mut actual = removed.clone();
+        actual.sort();
+        assert_eq!(actual, expected);
+        assert!(!unit_a.exists());
+        assert!(!unit_b.exists());
+        for path in &layout {
+            assert!(path.is_dir(), "{path:?} must survive eviction");
+        }
+        assert!(packages.join("blobs/payload.safetensors").is_file());
+        assert!(packages.join("staging/partial").is_file());
+        assert!(packages.join("models/nested").is_dir());
+        assert!(pinned_dir.is_dir());
+        assert!(pinned_file.is_file());
+        assert!(hidden_dir.is_dir());
+        assert!(hidden_file.is_file());
+        drop(pinned);
+        let after_unpin = evict(&packages, &pins).unwrap();
+        let mut after_unpin = after_unpin;
+        after_unpin.sort();
+        let mut expected_after = vec![pinned_dir.clone(), pinned_file.clone()];
+        expected_after.sort();
+        assert_eq!(after_unpin, expected_after);
+        for path in &layout {
+            assert!(path.is_dir(), "{path:?} must survive eviction");
+        }
+        assert!(hidden_dir.is_dir());
+        assert!(hidden_file.is_file());
     }
 }
