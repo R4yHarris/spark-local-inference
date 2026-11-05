@@ -167,7 +167,7 @@ class HeldFile:
 
     def validate(self):
         if file_identity(self.descriptor) != self.identity or file_identity_path(self.path) != self.identity:
-            raise RuntimeError("checkpoint source changed after admission")
+            raise RuntimeError(f"checkpoint source changed after admission: {self.path.name}")
 
 
 def file_identity_path(path):

@@ -248,6 +248,21 @@ def test_source_mutation_aborts_the_same_reader(tmp_path):
         server.thread.join(5)
         assert isinstance(server.error, RuntimeError)
         assert "changed" in str(server.error)
+        assert "weights.safetensors" in str(server.error)
+
+
+def test_held_file_validate_includes_filename(tmp_path):
+    path = tmp_path / "weights.safetensors"
+    path.write_bytes(b"initial bytes")
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        held = transport.HeldFile(path, descriptor, transport.file_identity(descriptor))
+        with path.open("ab") as stream:
+            stream.write(b"appended")
+        with pytest.raises(RuntimeError, match="weights.safetensors"):
+            held.validate()
+    finally:
+        os.close(descriptor)
 
 
 def test_disconnect_aborts_reader_and_private_metadata_is_removed(tmp_path):
