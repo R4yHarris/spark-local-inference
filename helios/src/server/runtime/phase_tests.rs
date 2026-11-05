@@ -3465,6 +3465,15 @@ fn http_state_for(
     sender: mpsc::SyncSender<Vec<Incoming>>,
     api_key: Option<String>,
 ) -> Arc<super::super::HttpState> {
+    http_state_with(fixture, sender, api_key, None)
+}
+
+fn http_state_with(
+    mut fixture: Fixture,
+    sender: mpsc::SyncSender<Vec<Incoming>>,
+    api_key: Option<String>,
+    metrics: Option<Arc<super::super::metrics::Metrics>>,
+) -> Arc<super::super::HttpState> {
     use super::super::HttpState;
     use tokio::sync::Semaphore;
     let vocabulary = fixture.frontend.tokenizer().get_vocab_size(true);
@@ -3491,7 +3500,7 @@ fn http_state_for(
             error: None,
         })),
         finished: Arc::new((Mutex::new(true), Condvar::new())),
-        metrics: fixture.metrics,
+        metrics: metrics.unwrap_or(fixture.metrics),
         input_store: None,
     });
     Arc::new(HttpState {
@@ -3994,7 +4003,18 @@ async fn ollama_discovery_uses_bearer_auth_without_generation_admission() {
 async fn metrics_route_serves_prometheus_or_json_without_the_api_key() {
     use std::io::{Read, Write};
     let (sender, _receiver) = mpsc::sync_channel(4);
-    let state = http_state(sender, Some("serving-key".into()));
+    let metrics = Arc::new(super::super::metrics::Metrics::new(16, 128, 0));
+    metrics.scheduler(crate::scheduler::SchedulerStats {
+        reused_tokens: 30,
+        free_pages: 4,
+        ..Default::default()
+    });
+    let state = http_state_with(
+        Fixture::new(),
+        sender,
+        Some("serving-key".into()),
+        Some(metrics),
+    );
     state.model.metrics().progress(10, 3, 0, 0, 0, 0);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -4055,7 +4075,90 @@ async fn metrics_route_serves_prometheus_or_json_without_the_api_key() {
     }
     assert_eq!(get("/metrics?format=yaml", None).await.unwrap().0, 400);
     assert_eq!(get("/health", None).await.unwrap().0, 200);
+    let (status, content_type, body) = get("/v1/loads", None).await.unwrap();
+    assert_eq!((status, content_type.as_str()), (200, "application/json"));
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["timestamp"], "");
+    assert_eq!(value["dp_rank_count"], 1);
+    let loads = value["loads"].as_array().unwrap();
+    assert_eq!(loads.len(), 1);
+    let load = &loads[0];
+    assert_eq!(load["dp_rank"], 0);
+    assert_eq!(load["num_running_reqs"], 0);
+    assert_eq!(load["num_waiting_reqs"], 0);
+    assert_eq!(load["num_used_tokens"], (16 - 4) * 128);
+    assert_eq!(load["max_total_num_tokens"], 16 * 128);
+    assert_eq!(load["token_usage"], 12.0 / 16.0);
+    assert_eq!(load["gen_throughput"], 0.0);
+    assert_eq!(load["cache_hit_rate"], 30.0 / 40.0);
+    assert_eq!(load["max_running_requests"], 4);
     assert_eq!(get("/v1/models", None).await.unwrap().0, 401);
+    let empty = Arc::new(super::super::metrics::Metrics::default());
+    let (sender, _receiver) = mpsc::sync_channel(4);
+    let empty_state = http_state_with(Fixture::new(), sender, None, Some(empty));
+    let empty_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let empty_address = empty_listener.local_addr().unwrap();
+    let empty_router = super::super::router(empty_state, &[], 65536);
+    let empty_server = tokio::spawn(async move { axum::serve(empty_listener, empty_router).await });
+    let (status, _, body) = tokio::task::spawn_blocking(move || {
+        let mut stream = std::net::TcpStream::connect(empty_address).unwrap();
+        write!(
+            stream,
+            "GET /v1/loads HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status: u16 = head.split(' ').nth(1).unwrap().parse().unwrap();
+        (status, (), body.to_owned())
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let load = &value["loads"][0];
+    assert_eq!(load["token_usage"], 0.0);
+    assert_eq!(load["cache_hit_rate"], 0.0);
+    assert_eq!(load["num_used_tokens"], 0);
+    assert_eq!(load["max_total_num_tokens"], 0);
+    empty_server.abort();
+    let saturated = Arc::new(super::super::metrics::Metrics::new(4, 128, 0));
+    saturated.scheduler(crate::scheduler::SchedulerStats {
+        free_pages: 9,
+        reused_tokens: 5,
+        ..Default::default()
+    });
+    let (sender, _receiver) = mpsc::sync_channel(4);
+    let saturated_state = http_state_with(Fixture::new(), sender, None, Some(saturated));
+    let saturated_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let saturated_address = saturated_listener.local_addr().unwrap();
+    let saturated_router = super::super::router(saturated_state, &[], 65536);
+    let saturated_server =
+        tokio::spawn(async move { axum::serve(saturated_listener, saturated_router).await });
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        let mut stream = std::net::TcpStream::connect(saturated_address).unwrap();
+        write!(
+            stream,
+            "GET /v1/loads HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status: u16 = head.split(' ').nth(1).unwrap().parse().unwrap();
+        (status, body.to_owned())
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200);
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let load = &value["loads"][0];
+    assert_eq!(load["num_used_tokens"], 0);
+    assert_eq!(load["max_total_num_tokens"], 512);
+    assert_eq!(load["token_usage"], 0.0);
+    assert_eq!(load["cache_hit_rate"], 1.0);
+    saturated_server.abort();
     server.abort();
 }
 

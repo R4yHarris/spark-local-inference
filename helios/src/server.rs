@@ -415,6 +415,7 @@ fn router(state: Arc<HttpState>, served_names: &[String], max_body_bytes: usize)
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/v1/loads", get(loads))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
@@ -497,6 +498,38 @@ async fn metrics(State(state): State<Arc<HttpState>>, uri: Uri, headers: HeaderM
     )
         .into_response()
 }
+async fn loads(State(state): State<Arc<HttpState>>) -> Response {
+    let snapshot = state.model.metrics().snapshot(state.model.config().has_learned_drafts());
+    let used_pages = snapshot.total_pages.saturating_sub(snapshot.free_pages);
+    let token_usage = if snapshot.total_pages == 0 {
+        0.0
+    } else {
+        used_pages as f64 / snapshot.total_pages as f64
+    };
+    let total_prompt = snapshot.prefill_tokens + snapshot.reused_tokens;
+    let cache_hit_rate = if total_prompt == 0 {
+        0.0
+    } else {
+        snapshot.reused_tokens as f64 / total_prompt as f64
+    };
+    Json(json!({
+        "timestamp": "",
+        "dp_rank_count": 1,
+        "loads": [{
+            "dp_rank": 0,
+            "num_running_reqs": snapshot.active,
+            "num_waiting_reqs": snapshot.pending,
+            "num_used_tokens": used_pages * snapshot.page_tokens,
+            "max_total_num_tokens": snapshot.total_pages * snapshot.page_tokens,
+            "token_usage": token_usage,
+            "gen_throughput": state.generated_last_minute() as f64 / 60.0,
+            "cache_hit_rate": cache_hit_rate,
+            "max_running_requests": state.ingress_capacity,
+        }],
+    }))
+    .into_response()
+}
+
 fn readiness_failure(
     message: &'static str,
     disconnected: std::sync::mpsc::RecvError,
