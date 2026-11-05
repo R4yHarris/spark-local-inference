@@ -167,11 +167,41 @@ mod tests {
             "run<arg_key>text</arg_key><arg_value>a</arg_value><arg_key>text</arg_key><arg_value>b</arg_value>",
             "run<arg_key>text</arg_key><arg_value>unfinished",
             "run<arg_key>x</arg_key>text",
+            "run<arg_key>enabled</arg_key><arg_value>\"yes\"</arg_value>",
+            "run<arg_key>enabled</arg_key><arg_value>\"truthy\"</arg_value>",
+            "run<arg_key>enabled</arg_key><arg_value>\"2\"</arg_value>",
         ] {
             assert!(
                 ArgumentTags::parse(body, &config().tools).is_err(),
                 "{body}"
             );
+        }
+        for (raw, expected) in [
+            ("\"true\"", true),
+            ("\"TRUE\"", true),
+            ("\"True\"", true),
+            ("\"1\"", true),
+            ("\"false\"", false),
+            ("\"FALSE\"", false),
+            ("\"False\"", false),
+            ("\"0\"", false),
+            ("true", true),
+            ("false", false),
+        ] {
+            let body = format!("run<arg_key>enabled</arg_key><arg_value>{raw}</arg_value>");
+            let calls = ArgumentTags::parse(&body, &config().tools).unwrap();
+            let arguments: Value = serde_json::from_str(&calls[0].1).unwrap();
+            assert_eq!(arguments["enabled"], json!(expected), "{raw}");
+        }
+        for (raw, expected) in [
+            ("\"hello\"", json!("\"hello\"")),
+            ("true", json!("true")),
+            ("2", json!("2")),
+        ] {
+            let body = format!("run<arg_key>text</arg_key><arg_value>{raw}</arg_value>");
+            let calls = ArgumentTags::parse(&body, &config().tools).unwrap();
+            let arguments: Value = serde_json::from_str(&calls[0].1).unwrap();
+            assert_eq!(arguments["text"], expected, "{raw}");
         }
     }
 

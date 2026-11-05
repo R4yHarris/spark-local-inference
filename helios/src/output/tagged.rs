@@ -796,6 +796,7 @@ pub(crate) fn parameter_value(raw: &str, schema: Option<&Value>) -> Result<Value
             return Ok(Value::String(raw.into()));
         }
         if let Ok(value) = &parsed {
+            let coerced = (kind == "boolean").then(|| quoted_boolean(value)).flatten();
             let valid = match kind {
                 "null" => value.is_null(),
                 "boolean" => value.is_boolean(),
@@ -805,10 +806,21 @@ pub(crate) fn parameter_value(raw: &str, schema: Option<&Value>) -> Result<Value
                 "object" => value.is_object(),
                 _ => false,
             };
+            if let Some(boolean) = coerced {
+                return Ok(Value::Bool(boolean));
+            }
             if valid {
                 return Ok(value.clone());
             }
         }
     }
     Err("tool parameter value does not match its declared JSON type".into())
+}
+
+fn quoted_boolean(value: &Value) -> Option<bool> {
+    match value.as_str()?.trim() {
+        text if text.eq_ignore_ascii_case("true") || text == "1" => Some(true),
+        text if text.eq_ignore_ascii_case("false") || text == "0" => Some(false),
+        _ => None,
+    }
 }
