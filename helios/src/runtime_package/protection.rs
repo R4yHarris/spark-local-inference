@@ -1887,6 +1887,7 @@ fn build_descriptor<F: Fn(&crate::package::schema::wire::PayloadUse) -> Result<w
         frontend: package.frontend.clone(),
         cluster: deployment.cluster.clone(),
         contract: deployment.contract.clone(),
+        rebuild: deployment.rebuild.clone(),
         ..Default::default()
     })
 }
@@ -2764,7 +2765,7 @@ mod format_sniff_tests {
 }
 
 #[cfg(test)]
-mod payload_package_tests {
+pub(crate) mod payload_package_tests {
     use super::*;
     use crate::package::PayloadId;
     use crate::package::export::{
@@ -3104,7 +3105,7 @@ mod payload_package_tests {
 
     /// Publish a real two-deployment package: tp1 with one rank and tp2 with two, where rank 0 of
     /// tp2 owns an extra payload that rank 1 must not be asked to transfer.
-    fn two_deployment_package() -> (std::path::PathBuf, Vec<Publisher>, [u8; 32]) {
+    pub(crate) fn two_deployment_package() -> (std::path::PathBuf, Vec<Publisher>, [u8; 32]) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root =
@@ -3248,6 +3249,123 @@ mod payload_package_tests {
             development: false,
         }];
         (root, publishers, package_id)
+    }
+
+    pub(crate) fn rebuild_package() -> (std::path::PathBuf, Vec<Publisher>) {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("flare-rebuild-{}-{unique}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let public_key: [u8; 32] = key.public_key().as_ref().try_into().unwrap();
+        let package_id = [17u8; 32];
+        let weights = b"rebuild rank weights".to_vec();
+        let weight_id = PayloadId::of(&weights);
+        let weight_len = weights.len() as u64;
+        let weight_path = write(&root, "weights.prepared", &weights);
+        let cubin = write(&root, "k.plain", b"fake cubin");
+        let graph = write(&root, "g.plain", b"fake graph");
+        let resources = || {
+            vec![
+                PublishResource {
+                    kind: pw::ExecutableKind::Cubin,
+                    path: cubin.clone(),
+                    nbytes: 10,
+                },
+                PublishResource {
+                    kind: pw::ExecutableKind::Graph,
+                    path: graph.clone(),
+                    nbytes: 10,
+                },
+            ]
+        };
+        let manifest = |identity: &str, version: u32, ring: bool| wire::RebuildManifest {
+            version,
+            recipe: "rebuild-fixture".into(),
+            source_identity: identity.into(),
+            checkpoint_repository: "example/rebuild".into(),
+            checkpoint_revision: "revision".into(),
+            roce_ring: ring,
+            roce_chain: !ring,
+            ..Default::default()
+        };
+        let deployment = |id: &str, tp: u32, rebuild: Option<wire::RebuildManifest>| {
+            let ranks = (0..tp)
+                .map(|rank| PublishRank {
+                    body: rank_body(id, rank, weight_id.as_bytes(), weight_len),
+                    payloads: vec![PublishPayload {
+                        role: pw::PayloadRole::Weights,
+                        relative: format!("weights/{id}-rank-{rank}.safetensors"),
+                        source: crate::package::export::pin_file(&weight_path, weight_len).unwrap(),
+                        id: weight_id,
+                        tensor: None,
+                    }],
+                    resources: resources(),
+                })
+                .collect();
+            PublishDeployment {
+                body: pw::DeploymentBody {
+                    deployment_id: id.into(),
+                    architecture: vec![12, 0],
+                    tensor_parallel: tp,
+                    contract: Some(crate::runtime_package::wire::ServingContract {
+                        model_contract: Some(crate::runtime_package::wire::ModelContract::default()),
+                        ..Default::default()
+                    }),
+                    cluster: None,
+                    rebuild,
+                    engram: None,
+                    payloads: vec![],
+                    ranks: vec![],
+                },
+                payloads: vec![],
+                ranks,
+            }
+        };
+        let request = PublishRequest {
+            package: pw::PackageBody {
+                format_version: 1,
+                package_id: package_id.to_vec(),
+                model_identity: "rebuild-model".into(),
+                hardware_identity: "sm120".into(),
+                publisher: Some(pw::PublisherMetadata {
+                    namespace: "example".into(),
+                    official_source: "https://huggingface.co/example/model".into(),
+                    development: false,
+                    license_name: String::new(),
+                    license_link: String::new(),
+                    ranks: 0,
+                }),
+                frontend: Some(crate::runtime_package::wire::FrontendSettings::default()),
+                sampling_defaults: Some(
+                    crate::runtime_package::wire::DefaultSamplingParameters::default(),
+                ),
+                payloads: vec![],
+                assets: vec![],
+                deployments: vec![],
+            },
+            payloads: vec![],
+            deployments: vec![
+                deployment("sm120-tp1", 1, Some(manifest("ring-source", 1, true))),
+                deployment("sm120-tp2", 2, Some(manifest("chain-source", 2, false))),
+            ],
+            package_id,
+            public_key,
+            accepted: "example".into(),
+            no_weights: false,
+        };
+        export::publish(&request, &key, Destination::Directory(&root)).unwrap();
+        let publishers = vec![Publisher {
+            name: "Example".into(),
+            namespace: "example".into(),
+            public_key,
+            development: false,
+        }];
+        (root, publishers)
     }
 
     /// Publish a real TP2 package with one shared Engram table and one partitioned table.

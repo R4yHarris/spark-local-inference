@@ -470,6 +470,50 @@ mod tests {
         assert_eq!(before["cache"], after["cache"]);
         assert_eq!(after["rebuild"]["version"], 99);
         assert_eq!(after["ranks"][0]["rebuild_weights"]["version"], 99);
+        let (root, publishers) =
+            crate::runtime_package::protection::payload_package_tests::rebuild_package();
+        let selected = crate::runtime_package::VerifiedPackage::open_tensor_parallel(
+            &root, &publishers, 2, None,
+        )
+        .unwrap();
+        let described = selected.describe(InspectionOptions::default()).unwrap();
+        assert_eq!(described["rebuild"]["source_identity"], "chain-source");
+        assert_eq!(described["rebuild"]["version"], 2);
+        assert_eq!(described["rebuild"]["roce_chain"], true);
+        assert_eq!(described["rebuild"]["roce_ring"], false);
+        assert!(described["model"].is_object());
+        assert_eq!(described["package"]["tensor_parallel"], 2);
+        assert!(
+            described["ranks"][0]["device_bytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0)
+        );
+        let sibling = crate::runtime_package::VerifiedPackage::open_tensor_parallel(
+            &root, &publishers, 1, None,
+        )
+        .unwrap();
+        let sibling_described = sibling.describe(InspectionOptions::default()).unwrap();
+        assert_eq!(sibling_described["rebuild"]["source_identity"], "ring-source");
+        assert_eq!(sibling_described["rebuild"]["version"], 1);
+        assert_eq!(sibling_described["rebuild"]["roce_ring"], true);
+        assert_ne!(described["rebuild"], sibling_described["rebuild"]);
+        drop((selected, sibling));
+        let _ = std::fs::remove_dir_all(&root);
+        let (plain_root, plain_publishers, _) =
+            crate::runtime_package::protection::payload_package_tests::two_deployment_package();
+        let without = crate::runtime_package::VerifiedPackage::open_tensor_parallel(
+            &plain_root,
+            &plain_publishers,
+            1,
+            None,
+        )
+        .unwrap();
+        let without_described = without.describe(InspectionOptions::default()).unwrap();
+        assert!(without_described["rebuild"].is_null());
+        assert!(without_described["model"].is_object());
+        assert_eq!(without_described["package"]["tensor_parallel"], 1);
+        drop(without);
+        let _ = std::fs::remove_dir_all(&plain_root);
     }
 
     #[test]
