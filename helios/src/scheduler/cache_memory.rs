@@ -170,6 +170,17 @@ impl RequestScheduler {
         false
     }
 
+    pub fn snapshot_exclusive_pages(&self, id: SnapshotId) -> Vec<PageId> {
+        let Some(range) = self.snapshot_pages.get(id.0 as usize) else {
+            return Vec::new();
+        };
+        range
+            .clone()
+            .filter(|&page| self.page_snapshot_refs.get(page as usize).copied() == Some(1))
+            .map(PageId)
+            .collect()
+    }
+
     pub(super) fn release_snapshot(&mut self, id: SnapshotId) {
         assert!(self.free_snapshots.insert(id), "snapshot released twice");
         if let Some(range) = self.snapshot_pages.get(id.0 as usize) {
@@ -215,6 +226,22 @@ mod tests {
         s.release_snapshot(b);
         assert_eq!(s.free_page_count(), 16);
         assert_eq!(s.stats().snapshot_backing_pages, 0);
+    }
+
+    #[test]
+    fn snapshot_exclusive_pages_identifies_pages_leaving_alias_use() {
+        let mut s = super::super::tests::scheduler(2, 16, 2);
+        s.share_snapshot_pages(&[8..12, 10..14]).unwrap();
+        let a = s.reserve_snapshot(0).unwrap();
+        let b = s.reserve_snapshot(0).unwrap();
+        assert_eq!(s.snapshot_exclusive_pages(a), vec![PageId(8), PageId(9)]);
+        assert_eq!(s.snapshot_exclusive_pages(b), vec![PageId(12), PageId(13)]);
+        s.release_snapshot(a);
+        assert_eq!(
+            s.snapshot_exclusive_pages(b),
+            vec![PageId(10), PageId(11), PageId(12), PageId(13)]
+        );
+        assert_eq!(s.snapshot_exclusive_pages(SnapshotId(7)), Vec::new());
     }
 
     #[test]
