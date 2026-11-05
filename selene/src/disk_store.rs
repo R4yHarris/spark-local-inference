@@ -60,6 +60,10 @@ pub const WINDOWS_IN_FLIGHT: usize = crate::shared::WINDOW_CREDITS as usize;
 /// pins and ticket ids held for the store stay bounded.
 pub const RECORDS_IN_FLIGHT: usize = 8;
 
+/// Row compactions one poll issues before leaving the rest of `thinning`
+/// queued for later polls.
+const MAX_THINNING_PER_POLL: usize = 32;
+
 /// A record file as the disk index sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiskRecord {
@@ -2073,18 +2077,22 @@ impl DiskStore {
     }
 
     pub(crate) fn thin_rows(&mut self) {
+        let mut pending = Vec::new();
         for key in std::mem::take(&mut self.thinning) {
             if !self.index.row_redundant(&key, true) || !self.index[&key].row {
                 continue;
             }
             let node = &self.index[&key];
             if !node.ready || node.pinned() {
-                self.thinning.insert(key);
+                pending.push(key);
+            } else if self.maintenance.len() >= MAX_THINNING_PER_POLL {
+                pending.push(key);
             } else if self.compact(&key).is_ok() {
                 self.index.drop_row(&key);
                 self.stats.rows_thinned[1] += 1;
             }
         }
+        self.thinning.extend(pending);
     }
 
     /// Evict until `bytes` more fit under the limit; false when nothing
@@ -3009,6 +3017,56 @@ mod tests {
         assert!(store.maintenance.is_empty());
         assert_eq!(store.stats().dropped[5], 0);
         assert_eq!(store.stats().rows_thinned, [0, 0]);
+        drop(store);
+        drop(log);
+
+        let full = history(64 * 42);
+        let headers: Vec<Header> = (1..=42)
+            .map(|step| {
+                header(
+                    &geometry(),
+                    &full,
+                    64 * step,
+                    (step > 1).then_some(64 * (step - 1)),
+                )
+            })
+            .collect();
+        let records = headers
+            .iter()
+            .enumerate()
+            .map(|(i, h)| scanned(&directory(), h.clone(), i as u64, true))
+            .collect();
+        let (mut store, log) = store_with(records, 1 << 30);
+        assert_eq!(store.thinning.len(), 41);
+        store.poll(&mut Vec::new()).unwrap();
+        let truncates = |log: &Rc<RefCell<Log>>| {
+            log.borrow()
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::Truncate { .. }))
+                .count()
+        };
+        assert_eq!(truncates(&log), 32);
+        assert_eq!(store.maintenance.len(), 32);
+        assert_eq!(store.thinning.len(), 8);
+        let ids: Vec<JobId> = {
+            let mut ids: Vec<JobId> = store.maintenance.keys().copied().collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(ids.len(), 32);
+        for id in ids {
+            log.borrow_mut().events.push(TransportEvent::Truncated {
+                id,
+                result: Ok(()),
+            });
+        }
+        store.poll(&mut Vec::new()).unwrap();
+        assert_eq!(truncates(&log), 40);
+        assert_eq!(store.stats().rows_thinned[1], 40);
+        assert!(store.thinning.is_empty());
+        assert!(headers[1..=40].iter().all(|h| !store.index[&h.key].row));
+        assert!(store.index[&headers[41].key].row);
     }
 
     #[test]
