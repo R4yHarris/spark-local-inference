@@ -67,7 +67,7 @@ def test_compiler_pools_leave_host_headroom(pools, gib):
 
 
 def test_insufficient_host_ram_fails_before_workers_start():
-    with pytest.raises(MemoryError, match="available host memory"):
+    with pytest.raises(MemoryError, match="vm.min_free_kbytes"):
         worker_limit(8, pools=4, available=15 << 30)
 
 

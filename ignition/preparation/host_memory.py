@@ -112,7 +112,8 @@ def worker_limit(limit, *, pools=1, available=None, device_bytes=0, headroom_byt
     capacity = (available - headroom) // (pools * worker_bytes)
     if capacity < 1:
         raise MemoryError(f"preparation requires at least {(headroom + pools * worker_bytes) >> 20} MiB "
-                          f"available host memory; found {available >> 20} MiB")
+                          f"available host memory; found {available >> 20} MiB "
+                          f"(check vm.min_free_kbytes on unified-memory hosts)")
     return min(limit, capacity)
 
 
@@ -148,7 +149,8 @@ def tuning_limits(device, workers, *, pools=1, headroom_bytes=0, race_budget=Non
     usable = (available - headroom) // pools - _TUNING_GROWTH_BYTES
     if usable <= 0:
         raise MemoryError(f"kernel tuning needs more than {(headroom + pools * _TUNING_GROWTH_BYTES) >> 20} MiB "
-                          f"available shared memory; found {available >> 20} MiB")
+                          f"available shared memory; found {available >> 20} MiB "
+                          f"(check vm.min_free_kbytes on unified-memory hosts)")
     race = max(1, usable // 4)
     if race_budget is not None:
         race = min(race, race_budget)
