@@ -141,13 +141,7 @@ impl RecipientOutput {
                     let recipient = header.trim().strip_prefix("to=").unwrap_or("user").trim();
                     self.recipient = None;
                     if !matches!(recipient, "self" | "user" | "commentary") {
-                        if self.tools.is_empty()
-                            || (recipient != "tool"
-                                && !self
-                                    .tools
-                                    .iter()
-                                    .any(|tool| tool["function"]["name"] == recipient))
-                        {
+                        if self.tools.is_empty() {
                             return Err("recipient names an unavailable tool".into());
                         }
                         if recipient != "tool" {
@@ -241,15 +235,13 @@ impl RecipientOutput {
         if calls.len() != 1 {
             return Err("recipient frames require exactly one ATEM invocation".into());
         }
-        if calls.iter().any(|(name, _)| {
-            self.recipient
-                .as_ref()
-                .is_some_and(|recipient| recipient != name)
-                || !self
-                    .tools
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == *name)
-        }) {
+        if self.tools.is_empty()
+            || calls.iter().any(|(name, _)| {
+                self.recipient
+                    .as_ref()
+                    .is_some_and(|recipient| recipient != name)
+            })
+        {
             return Err("ATEM invocation does not match its registered tool recipient".into());
         }
         Ok(calls)
@@ -387,6 +379,22 @@ mod tests {
                     json!({"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{
                 "text":{"type":"string"},"n":{"type":"integer"},"ok":{"type":"boolean"},"list":{"type":"array","items":{"type":"integer"}},"obj":{"type":"object","properties":{"n":{"type":"integer"}}},"maybe":{"type":["string","null"]}}}}}),
                 ],
+            },
+            vec![
+                (1, START.into()),
+                (2, MESSAGE.into()),
+                (3, END.into()),
+                (4, TURN_END.into()),
+            ],
+        )
+    }
+
+    fn parser_with_tools(tools: Vec<Value>) -> RecipientOutput {
+        RecipientOutput::new(
+            OutputConfig {
+                structured: false,
+                start: OutputStart::RecipientHeader,
+                tools,
             },
             vec![
                 (1, START.into()),
@@ -561,15 +569,58 @@ mod tests {
             let (header, body) = text.split_once(MESSAGE).unwrap();
             parser.push(Input::Text(header)).unwrap();
             parser.push(Input::Token(2)).unwrap();
-            let header_result = parser.push(Input::Text(MESSAGE));
-            if recipient == "other" {
-                assert!(header_result.is_err());
-            } else {
-                header_result.unwrap();
-                parser.push(Input::Text(body)).unwrap();
-                assert!(parser.finish(Termination::Eos).is_err());
-            }
+            parser.push(Input::Text(MESSAGE)).unwrap();
+            parser.push(Input::Text(body)).unwrap();
+            assert!(parser.finish(Termination::Eos).is_err());
         }
+        let text = " to=other<|message|><atem:function_calls><atem:invoke name=\"other\"></atem:invoke></atem:function_calls>";
+        let events = feed(&mut parser(), text, 0);
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| matches!(event, Event::ToolBegin { .. }))
+                .cloned(),
+            Some(Event::ToolBegin {
+                index: 0,
+                name: "other".into(),
+                id: None
+            })
+        );
+        let mut empty = parser_with_tools(vec![]);
+        empty.push(Input::Text(" to=other")).unwrap();
+        empty.push(Input::Token(2)).unwrap();
+        assert_eq!(
+            empty.push(Input::Text(MESSAGE)).unwrap_err().to_string(),
+            "recipient names an unavailable tool"
+        );
+        assert_eq!(empty.recipient, None);
+        let call = "<atem:function_calls><atem:invoke name=\"lookup\"></atem:invoke></atem:function_calls>";
+        let mut unregistered = parser_with_tools(vec![json!({"type":"function","function":{"name":"lookup"}})]);
+        unregistered.push(Input::Text(" to=other")).unwrap();
+        unregistered.push(Input::Token(2)).unwrap();
+        unregistered.push(Input::Text(MESSAGE)).unwrap();
+        assert_eq!(unregistered.recipient.as_deref(), Some("other"));
+        let mut excluded = parser_with_tools(vec![json!({"type":"function","function":{"name":"lookup"}})]);
+        let text = format!(
+            " to=self<|message|><|eom|><|start|>assistant to=user<|message|><|eom|><|start|>assistant to=commentary<|message|><|eom|><|start|>assistant to=tool<|message|>{call}"
+        );
+        excluded.push(Input::Text(&text)).unwrap();
+        assert_eq!(excluded.recipient, None);
+        let atem = "<atem:function_calls><atem:invoke name=\"lookup\"></atem:invoke></atem:function_calls>";
+        let mut empty = parser_with_tools(vec![]);
+        empty.push(Input::Text(" to=lookup")).unwrap();
+        empty.push(Input::Token(2)).unwrap();
+        assert_eq!(
+            empty.push(Input::Text(MESSAGE)).unwrap_err().to_string(),
+            "recipient names an unavailable tool"
+        );
+        empty.state = State::Tool;
+        empty.recipient = Some("lookup".into());
+        empty.push(Input::Text(atem)).unwrap();
+        assert_eq!(
+            empty.finish(Termination::Eos).unwrap_err().to_string(),
+            "ATEM invocation does not match its registered tool recipient"
+        );
     }
     #[test]
     fn complete_assistant_frames_parse_after_a_closed_prompt() {
