@@ -429,6 +429,24 @@ pub(crate) fn temporary(directory: &Path, prefix: &str) -> Result<(File, PathBuf
     }
     Err("cannot create unique export temporary file".into())
 }
+pub(crate) fn install_blob_fallback(temporary: &Path, destination: &Path) -> Result<()> {
+    std::fs::hard_link(temporary, destination)?;
+    std::fs::remove_file(temporary)?;
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+fn rename_unsupported(error: &std::io::Error) -> bool {
+    let Some(code) = error.raw_os_error() else {
+        return false;
+    };
+    const UNSUPPORTED: [i32; 4] = [
+        libc::EINVAL,
+        libc::ENOTSUP,
+        libc::EOPNOTSUPP,
+        libc::ENOSYS,
+    ];
+    UNSUPPORTED.contains(&code)
+}
 pub(crate) fn install_blob(temporary: &Path, destination: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -445,7 +463,11 @@ pub(crate) fn install_blob(temporary: &Path, destination: &Path) -> Result<()> {
             )
         } != 0
         {
-            return Err(std::io::Error::last_os_error().into());
+            let error = std::io::Error::last_os_error();
+            if rename_unsupported(&error) {
+                return install_blob_fallback(temporary, destination);
+            }
+            return Err(error.into());
         }
     }
     #[cfg(windows)]
@@ -651,6 +673,49 @@ mod tests {
         assert!(sources.read_at("", 5, &mut [0; 2]).is_err());
         assert_eq!(&sources.container.envelope, b"signed envelope");
         drop(sources);
+        let installed = directory.join("installed.safetensors");
+        let staged = directory.join("staged");
+        std::fs::write(&staged, b"blob").unwrap();
+        install_blob_fallback(&staged, &installed).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"blob");
+        assert!(!staged.exists());
+        let existing = directory.join("existing.safetensors");
+        std::fs::write(&existing, b"original").unwrap();
+        let pending = directory.join("pending");
+        std::fs::write(&pending, b"new").unwrap();
+        let error = install_blob_fallback(&pending, &existing).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), b"original");
+        assert_eq!(std::fs::read(&pending).unwrap(), b"new");
+        let via_install = directory.join("via-install.safetensors");
+        install_blob(&pending, &via_install).unwrap();
+        assert_eq!(std::fs::read(&via_install).unwrap(), b"new");
+        assert!(!pending.exists());
+        let rename_pending = directory.join("rename-pending");
+        std::fs::write(&rename_pending, b"replacement").unwrap();
+        let error = install_blob(&rename_pending, &existing).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), b"original");
+        #[cfg(target_os = "linux")]
+        {
+            for code in [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOSYS] {
+                assert!(rename_unsupported(&std::io::Error::from_raw_os_error(code)));
+            }
+            assert!(!rename_unsupported(&std::io::Error::from_raw_os_error(
+                libc::EEXIST
+            )));
+            assert!(!rename_unsupported(&std::io::Error::from_raw_os_error(
+                libc::EACCES
+            )));
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
