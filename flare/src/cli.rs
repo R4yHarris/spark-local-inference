@@ -959,6 +959,15 @@ pub struct ServingOptions {
         help_heading = "Prefix cache options"
     )]
     pub prefix_cache_pool_ca: Option<PathBuf>,
+
+    /// Disaggregated serving role for cache-aware gateways [default: unified prefill and decode].
+    #[arg(
+        long,
+        value_name = "ROLE",
+        value_parser = ["prefill", "decode"],
+        help_heading = "Prefix cache options"
+    )]
+    pub role: Option<String>,
 }
 
 fn served_model_name(value: &str) -> Result<String, String> {
@@ -1120,6 +1129,9 @@ impl ServingOptions {
         }
         if let Some(ca) = &self.prefix_cache_pool_ca {
             options.extend(["--prefix-cache-pool-ca".into(), ca.display().to_string()]);
+        }
+        if let Some(role) = &self.role {
+            options.extend(["--role".into(), role.clone()]);
         }
         options
     }
@@ -2031,6 +2043,57 @@ mod tests {
                 .rank_options()
                 .is_empty()
         );
+        let unset = run(&["flare", "run", "model.safetensors"]);
+        assert_eq!(unset.role, None);
+        assert!(!unset.rank_options().contains(&"--role".to_owned()));
+        for role in ["prefill", "decode"] {
+            let args = run(&["flare", "run", "model.safetensors", "--role", role]);
+            assert_eq!(args.role.as_deref(), Some(role));
+            let forwarded_options = args.rank_options();
+            assert_eq!(
+                forwarded_options,
+                ["--role".to_owned(), role.to_owned()]
+            );
+            let mut forwarded = vec!["flare", "run", "model.safetensors"];
+            forwarded.extend(forwarded_options.iter().map(String::as_str));
+            let peer = run(&forwarded);
+            assert_eq!(peer.role.as_deref(), Some(role));
+        }
+        assert!(Cli::try_parse_from(["flare", "run", "model.safetensors", "--role", "invalid"]).is_err());
+        assert!(Cli::try_parse_from(["flare", "run", "model.safetensors", "--role"]).is_err());
+        let combined = run(&[
+            "flare",
+            "run",
+            "model.safetensors",
+            "--prefix-cache-memory",
+            "0",
+            "--prefix-cache-disk",
+            "/var/cache/flare",
+            "--prefix-cache-disk-limit",
+            "100G",
+            "--prefix-cache-drain-on-shutdown=1.5m",
+            "--role",
+            "decode",
+        ]);
+        assert_eq!(
+            combined.rank_options(),
+            [
+                "--prefix-cache-memory",
+                "0",
+                "--prefix-cache-disk",
+                "/var/cache/flare",
+                "--prefix-cache-disk-limit",
+                "107374182400",
+                "--prefix-cache-drain-on-shutdown=90",
+                "--role",
+                "decode",
+            ]
+        );
+        assert_eq!(
+            combined.load_options().prefix_cache,
+            args.load_options().prefix_cache
+        );
+        assert_eq!(combined.role.as_deref(), Some("decode"));
     }
 
     #[test]
