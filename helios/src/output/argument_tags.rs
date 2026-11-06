@@ -15,6 +15,17 @@ use serde_json::{Map, Value};
 #[cfg(test)]
 use crate::output::tagged::{OutputConfig, TaggedOutput};
 
+fn trim_glm_noise(mut text: &str) -> &str {
+    loop {
+        let trimmed = text.trim_start();
+        if let Some(after) = trimmed.strip_prefix("[gMASK]") {
+            text = after;
+        } else {
+            return trimmed;
+        }
+    }
+}
+
 pub struct ArgumentTags;
 impl ToolDialect for ArgumentTags {
     const NAME: &'static str = "GLM";
@@ -23,9 +34,9 @@ impl ToolDialect for ArgumentTags {
     const CLOSE: &'static str = "</tool_call>";
 
     fn parse(body: &str, tools: &[Value]) -> Result<Vec<(String, String)>> {
-        let body = body.trim();
+        let body = trim_glm_noise(body);
         let split = body.find("<arg_key>").unwrap_or(body.len());
-        let name = body[..split].trim();
+        let name = trim_glm_noise(body[..split].trim_end_matches("[gMASK]").trim());
         if name.is_empty() {
             return Err("tool function name is empty".into());
         }
@@ -39,9 +50,8 @@ impl ToolDialect for ArgumentTags {
             .and_then(|parameters| parameters.get("properties"))
             .and_then(Value::as_object);
         let mut arguments = Map::new();
-        while !rest.trim().is_empty() {
-            let key = rest
-                .trim_start()
+        while !trim_glm_noise(rest).is_empty() {
+            let key = trim_glm_noise(rest)
                 .strip_prefix("<arg_key>")
                 .ok_or("GLM tool call requires an argument key")?;
             let (key, tail) = key
@@ -160,6 +170,67 @@ mod tests {
 
     #[test]
     fn malformed_calls_fail_without_coercion() {
+        assert_eq!(
+            ArgumentTags::parse(
+                "[gMASK]run[gMASK]<arg_key>text</arg_key><arg_value>hello</arg_value>[gMASK]",
+                &config().tools
+            )
+            .unwrap(),
+            vec![("run".to_owned(), "{\"text\":\"hello\"}".to_owned())]
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "[gMASK][gMASK]run[gMASK]<arg_key>text</arg_key><arg_value>[gMASK]hello[gMASK]</arg_value>[gMASK][gMASK]",
+                &config().tools
+            )
+            .unwrap(),
+            vec![("run".to_owned(), "{\"text\":\"[gMASK]hello[gMASK]\"}".to_owned())]
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "[gMASK]run[gMASK]<arg_key>text</arg_key><arg_value>a[gMASK]b</arg_value>[gMASK]",
+                &config().tools
+            )
+            .unwrap(),
+            vec![("run".to_owned(), "{\"text\":\"a[gMASK]b\"}".to_owned())]
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "[gMASK]run<arg_key>text</arg_key><arg_value>hello</arg_value>[gMASK]<arg_key>count</arg_key><arg_value>2</arg_value>[gMASK]",
+                &config().tools
+            )
+            .unwrap(),
+            vec![(
+                "run".to_owned(),
+                "{\"text\":\"hello\",\"count\":2}".to_owned()
+            )]
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "run<arg_key>text</arg_key><arg_value>x</arg_value>[gMASK]",
+                &config().tools
+            )
+            .unwrap(),
+            vec![("run".to_owned(), "{\"text\":\"x\"}".to_owned())]
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "run<arg_key>text</arg_key><arg_value>x</arg_value>[gMASK]junk",
+                &config().tools
+            )
+            .unwrap_err()
+            .to_string(),
+            "GLM tool call requires an argument key"
+        );
+        assert_eq!(
+            ArgumentTags::parse(
+                "[gMASK]run[gMASK]<arg_key>text</arg_key><arg_value>x</arg_value>[gMASK]junk[gMASK]",
+                &config().tools
+            )
+            .unwrap_err()
+            .to_string(),
+            "GLM tool call requires an argument key"
+        );
         for body in [
             "",
             "run<arg_key></arg_key><arg_value>x</arg_value>",
