@@ -129,6 +129,20 @@ impl AcceptanceProfile {
         f64::from(width != 0) + self.curve(source, 0, false)[..width.saturating_sub(1).min(7)].iter().sum::<f64>()
     }
 
+    pub fn servable_expected_tokens(
+        &self,
+        source: ProposalSource,
+        widths: &[usize],
+        fixed: Option<usize>,
+    ) -> Vec<(usize, f64)> {
+        widths
+            .iter()
+            .copied()
+            .filter(|&w| fixed.is_none_or(|f| f == w))
+            .map(|w| (w, self.expected_tokens(source, w)))
+            .collect()
+    }
+
     pub fn rounds(&self) -> u64 {
         self.rounds
     }
@@ -206,5 +220,19 @@ mod tests {
         let before = profile.curve(ProposalSource::Mtp, 0, false);
         profile.observe(ProposalSource::Mtp, 0, 7, 1, false, Some(&survival));
         assert_eq!(profile.curve(ProposalSource::Mtp, 0, false)[1..], before[1..]);
+
+        let widths = [1, 2, 4, 6];
+        assert_eq!(
+            profile.servable_expected_tokens(ProposalSource::Mtp, &widths, Some(6)),
+            vec![(6, profile.expected_tokens(ProposalSource::Mtp, 6))]
+        );
+        let adaptive = profile.servable_expected_tokens(ProposalSource::Mtp, &widths, None);
+        assert_eq!(adaptive.len(), widths.len());
+        assert!(adaptive.iter().zip(widths).all(|(&(width, tokens), expected_width)| {
+            width == expected_width && tokens == profile.expected_tokens(ProposalSource::Mtp, width)
+        }));
+        assert!(profile
+            .servable_expected_tokens(ProposalSource::Mtp, &[1, 2, 4], Some(6))
+            .is_empty());
     }
 }
