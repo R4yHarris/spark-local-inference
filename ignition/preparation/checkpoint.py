@@ -390,9 +390,10 @@ def _inspect_indexed_checkpoint(snapshot: Path, index: dict) -> IndexedCheckpoin
     if missing:
         raise CheckpointError(f"indexed tensor missing from shards: {min(missing)}")
     total = sum(tensor.nbytes for tensor in tensors.values())
+    metadata = index.get("metadata")
     if (
-        not isinstance(index.get("metadata"), dict)
-        or index["metadata"].get("total_size") != total
+        not isinstance(metadata, dict)
+        or (metadata.get("total_size") is not None and metadata.get("total_size") != total)
     ):
         raise CheckpointError(f"index total_size does not match tensor payload bytes: {total}")
     return IndexedCheckpoint(snapshot, MappingProxyType(tensors), tuple(shards))

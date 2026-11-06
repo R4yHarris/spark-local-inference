@@ -69,6 +69,41 @@ def test_single_safetensors_checkpoint_without_index(tmp_path):
     assert checkpoint.tensors["weight"].nbytes == 4
 
 
+_SINGLE_SHARD = "model-00001-of-00001.safetensors"
+_WEIGHT_MAP = {"a.weight": _SINGLE_SHARD, "b.weight": _SINGLE_SHARD}
+
+
+def _write_indexed_single_shard(root, metadata):
+    header = {
+        "a.weight": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
+        "b.weight": {"dtype": "BF16", "shape": [4], "data_offsets": [8, 16]},
+    }
+    _write_header(root / _SINGLE_SHARD, header, b"\0" * 16)
+    index = {"weight_map": dict(_WEIGHT_MAP), "metadata": metadata}
+    (root / "model.safetensors.index.json").write_text(json.dumps(index))
+
+
+def test_indexed_checkpoint_accepts_empty_metadata_dict(tmp_path):
+    from ignition.preparation.checkpoint import _inspect_indexed_checkpoint, inspect_indexed_checkpoint
+
+    _write_indexed_single_shard(tmp_path, {})
+    index = json.loads((tmp_path / "model.safetensors.index.json").read_text())
+    checkpoint = _inspect_indexed_checkpoint(tmp_path, index)
+    assert len(checkpoint.shards) == 1
+    assert sum(tensor.nbytes for tensor in checkpoint.tensors.values()) == 16
+    assert checkpoint.tensors["a.weight"].nbytes == 8
+    assert checkpoint.tensors["b.weight"].nbytes == 8
+
+    inspected = inspect_indexed_checkpoint(tmp_path)
+    assert len(inspected.shards) == 1
+    assert sum(tensor.nbytes for tensor in inspected.tensors.values()) == 16
+
+    for metadata in ({"total_size": 999999}, {"total_size": 15}, "not-a-dict", ["x"], None):
+        with pytest.raises(CheckpointError, match="total_size does not match"):
+            _inspect_indexed_checkpoint(tmp_path, {"weight_map": dict(_WEIGHT_MAP), "metadata": metadata})
+
+
+
 @pytest.mark.parametrize("dtype,shape,offsets", [
     ("F32", [2], [0, 4]),
     ("F32", [1], [0, 8]),
