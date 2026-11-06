@@ -726,6 +726,12 @@ pub fn render(value: &Value, width: usize, color: bool) -> String {
         "speculation",
         &if list(&speculation["widths"]).is_empty() {
             "disabled".into()
+        } else if let Some(w) = speculation["fixed_width"].as_u64() {
+            format!(
+                "{} · widths {} (fixed width {w})",
+                text(&speculation["proposal_source"]),
+                list(&speculation["widths"])
+            )
         } else {
             format!(
                 "{} · widths {}",
@@ -1543,6 +1549,40 @@ mod tests {
         assert!(model.contains("publisher"));
         assert!(model.contains("license"));
         assert!(plain.contains("1,048,576 tokens"));
+        let summary_row = |rendered: &str| {
+            rendered
+                .lines()
+                .find(|line| line.contains("speculation "))
+                .map(|line| {
+                    line.trim_end_matches('│')
+                        .trim()
+                        .trim_start_matches('│')
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            summary_row(&plain),
+            "speculation               mtp · widths 5, 3",
+            "{plain}"
+        );
+        assert!(!plain.contains("(fixed width"), "{plain}");
+        summary["speculation"]["fixed_width"] = json!(6);
+        let fixed = render(&summary, 100, false);
+        assert_eq!(
+            summary_row(&fixed),
+            "speculation               mtp · widths 5, 3 (fixed width 6)",
+            "{fixed}"
+        );
+        summary["speculation"]["widths"] = json!([]);
+        let disabled = render(&summary, 100, false);
+        assert_eq!(
+            summary_row(&disabled),
+            "speculation               disabled",
+            "{disabled}"
+        );
+        assert!(!disabled.contains("fixed width 6"), "{disabled}");
         assert!(plain.contains("Sampling"));
         assert!(!plain.contains("Frontend"));
         assert!(!plain.contains("Graphs · rank"));
