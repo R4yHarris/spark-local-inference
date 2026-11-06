@@ -257,6 +257,30 @@ def test_invalid_compression_is_rejected_with_the_supported_encoding(capsys):
     assert "invalid choice: 'zip' (choose from csf, native)" in capsys.readouterr().err
 
 
+def test_join_local_checkpoint_flag_defaults_and_modes(capsys):
+    arguments = ["join", "10.0.0.1:29500", "--rank", "1", "--ranks", "2"]
+    omitted = _parser().parse_args(arguments)
+    assert (omitted.rank, omitted.ranks) == (1, 2)
+    assert omitted.local_checkpoint is None
+    bare = _parser().parse_args([*arguments, "--local-checkpoint"])
+    assert bare.local_checkpoint == "require"
+    assert _parser().parse_args([*arguments, "--local-checkpoint", "require"]).local_checkpoint == "require"
+    preferred = _parser().parse_args([*arguments, "--local-checkpoint", "prefer"])
+    assert preferred.local_checkpoint == "prefer"
+    with pytest.raises(SystemExit) as error:
+        main([*arguments, "--local-checkpoint", "stream"])
+    assert error.value.code == 2
+    assert ("argument --local-checkpoint: invalid choice: 'stream' (choose from require, prefer)"
+            in " ".join(capsys.readouterr().err.split()))
+    with pytest.raises(SystemExit) as error:
+        main(["join", "--help"])
+    assert error.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--local-checkpoint [{require,prefer}]" in help_text
+    assert "read matching checkpoint shards from this host's cache or directory" in help_text
+    assert "(default: stream from rank 0)" in help_text
+
+
 def test_mistyped_alias_suggests_step5():
     with pytest.raises(UsageError, match="did you mean 'step5-preview-nvfp4'"):
         resolve("step4-preview-nvfp4")

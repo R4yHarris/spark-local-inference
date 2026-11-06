@@ -91,6 +91,9 @@ def _parser() -> argparse.ArgumentParser:
     joining.add_argument("--rank", type=int, required=True, metavar="R", help="this host's rank, 1 through N-1")
     joining.add_argument("--ranks", type=int, required=True, choices=range(2, 17), metavar="N", help="tensor-parallel ranks")
     joining.add_argument("--gpu", type=int, default=0, metavar="INDEX", help="this host's GPU (default: 0)")
+    joining.add_argument("--local-checkpoint", nargs="?", const="require", choices=("require", "prefer"),
+                         help="read matching checkpoint shards from this host's cache or directory"
+                              " (default: stream from rank 0)")
     keys = command("keygen", publishing.keygen, "create an encrypted production signing key and public profile")
     keys.add_argument("--directory", required=True, type=Path, help="new private directory; must not exist")
     keys.add_argument("--name", required=True, help="publisher display name")
