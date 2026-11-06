@@ -82,6 +82,11 @@ class GraphSignature:
             object.__setattr__(self, "packed_token_capacity", packed)
             if "query_lengths" in self.inputs and "speculative_prefix_limits" in self.inputs:
                 raise ValueError("speculative rounds cannot bind both query lengths and prefix limits")
+        elif self.kind == "mixed" and self.speculation_enabled:
+            depth = self.token_capacity - 1 if self.draft_tokens is None else self.draft_tokens
+            if type(depth) is not int or not 0 <= depth <= 7 or (self.token_capacity == 1 and depth != 0):
+                raise ValueError("speculative rounds require draft depth zero through seven and width-one rounds require zero")
+            object.__setattr__(self, "draft_tokens", depth)
         elif self.draft_tokens is not None:
             raise ValueError("explicit draft depth belongs to speculative rounds")
         if (type(self.confidence_width) is not int or self.confidence_width < 0

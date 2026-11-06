@@ -81,6 +81,23 @@ def test_speculative_metadata_keeps_actual_draft_depth_independent_of_target_wid
     width_one = GraphSignature("speculative", 4, 1, ("speculative_prefix_limits",),
                                draft_tokens=0, packed_token_capacity=4)
     assert width_one.draft_tokens == width_one.confidence_width == 0
+    mixed = GraphSignature("mixed", 4, 6, ("prefill_row",), speculation_enabled=True, prefill_capacity=64)
+    assert mixed.draft_tokens == 5
+    assert GraphSignature("mixed", 4, 1, ("prefill_row",), speculation_enabled=True,
+                          prefill_capacity=64).draft_tokens == 0
+    assert GraphSignature("mixed", 4, 6, ("prefill_row",), speculation_enabled=True,
+                          prefill_capacity=64, draft_tokens=3).draft_tokens == 3
+    assert GraphSignature("mixed", 4, 1, ("prefill_row",), speculation_enabled=False,
+                          prefill_capacity=64).draft_tokens is None
+    with pytest.raises(ValueError, match="explicit draft depth belongs to speculative rounds"):
+        GraphSignature("mixed", 4, 1, ("prefill_row",), speculation_enabled=False,
+                       prefill_capacity=64, draft_tokens=0)
+    with pytest.raises(ValueError, match="draft depth zero through seven"):
+        GraphSignature("mixed", 4, 6, ("prefill_row",), speculation_enabled=True,
+                       prefill_capacity=64, draft_tokens=8)
+    with pytest.raises(ValueError, match="width-one rounds require zero"):
+        GraphSignature("mixed", 4, 1, ("prefill_row",), speculation_enabled=True,
+                       prefill_capacity=64, draft_tokens=1)
 
 
 def test_rectangular_round_declares_complete_geometry(monkeypatch):
