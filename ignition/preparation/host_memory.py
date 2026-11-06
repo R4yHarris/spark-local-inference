@@ -102,12 +102,23 @@ def virtual_device_memory(device, group=None, *, tuning_replica=None):
     return min(int(store.get(key)) for key in keys)
 
 
+def host_headroom_bytes(headroom_bytes: int = 0) -> int:
+    """Return the greater of the host headroom floor and the requested reserve."""
+    floor = _HEADROOM_BYTES
+    if (override := os.environ.get("FLARE_HOST_HEADROOM_BYTES")) is not None:
+        value = int(override)
+        if value < 0:
+            raise ValueError("FLARE_HOST_HEADROOM_BYTES must be nonnegative")
+        floor = value
+    return max(floor, headroom_bytes)
+
+
 def worker_limit(limit, *, pools=1, available=None, device_bytes=0, headroom_bytes=0):
     """Bound worker RAM after the greater of system headroom and the requested reserve."""
     if limit <= 0 or pools <= 0 or device_bytes < 0 or headroom_bytes < 0:
         raise ValueError("compiler and pool limits must be positive; device bytes and headroom must be nonnegative")
     available = available_bytes() if available is None else available
-    headroom = max(_HEADROOM_BYTES, headroom_bytes)
+    headroom = host_headroom_bytes(headroom_bytes)
     worker_bytes = _WORKER_BYTES + device_bytes
     capacity = (available - headroom) // (pools * worker_bytes)
     if capacity < 1:
@@ -124,7 +135,7 @@ def compile_threads(limit, *, workers, available, device_bytes=0, headroom_bytes
     Inductor compile subprocesses about 0.4 GB; sixteen threads in one worker exhaust
     the memory a TP2 rank has left.
     """
-    headroom = max(_HEADROOM_BYTES, headroom_bytes)
+    headroom = host_headroom_bytes(headroom_bytes)
     spare = available - headroom - workers * (_WORKER_BYTES + device_bytes)
     return max(1, min(limit, spare // (workers * _COMPILE_THREAD_BYTES)))
 
@@ -145,7 +156,7 @@ def tuning_limits(device, workers, *, pools=1, headroom_bytes=0, race_budget=Non
     available = device_memory_info(device)[0]
     if os.name == "nt":
         available = min(available, available_bytes())
-    headroom = max(_HEADROOM_BYTES, headroom_bytes)
+    headroom = host_headroom_bytes(headroom_bytes)
     usable = (available - headroom) // pools - _TUNING_GROWTH_BYTES
     if usable <= 0:
         raise MemoryError(f"kernel tuning needs more than {(headroom + pools * _TUNING_GROWTH_BYTES) >> 20} MiB "

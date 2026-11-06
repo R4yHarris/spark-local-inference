@@ -71,6 +71,21 @@ def test_insufficient_host_ram_fails_before_workers_start():
         worker_limit(8, pools=4, available=15 << 30)
 
 
+def test_host_headroom_bytes_env_override_lowers_the_default_floor(monkeypatch):
+    monkeypatch.delenv("FLARE_HOST_HEADROOM_BYTES", raising=False)
+    assert host_memory.host_headroom_bytes(0) == 8 << 30
+    with pytest.raises(MemoryError, match="available host memory"):
+        worker_limit(8, pools=2, available=12269 << 20)
+
+    monkeypatch.setenv("FLARE_HOST_HEADROOM_BYTES", str(6 << 30))
+    assert host_memory.host_headroom_bytes(0) == 6442450944
+    assert worker_limit(8, pools=2, available=12269 << 20) == 1
+
+    monkeypatch.setenv("FLARE_HOST_HEADROOM_BYTES", "-1")
+    with pytest.raises(ValueError, match="FLARE_HOST_HEADROOM_BYTES must be nonnegative"):
+        worker_limit(8, pools=2, available=12269 << 20)
+
+
 def test_unified_memory_budgets_host_and_device_storage_together():
     assert worker_limit(8, available=24 << 30) == 8
     assert worker_limit(8, available=24 << 30, device_bytes=2 << 30) == 4
