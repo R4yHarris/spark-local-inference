@@ -23,6 +23,8 @@ use crate::{ExecutionError, Failure, Result};
 
 /// Each peer is reached over at most this many devices.
 pub const MAX_RAILS: usize = 2;
+/// The IPv6 GRH flow label a 2-hop write to a non-neighbor ring peer carries.
+pub const TWO_HOP_FLOW_LABEL: u32 = 16383;
 /// A rank opens at most this many devices.
 pub const MAX_DEVICES: usize = 4;
 /// b12x's default GID index: RoCEv2 over IPv4 on a DGX Spark.
@@ -107,6 +109,22 @@ impl Shape {
                 peer != rank && (peer == (rank + 1) % world || peer == (rank + world - 1) % world)
             }
             Shape::Chain => peer + 1 == rank || peer == rank + 1,
+        }
+    }
+
+    /// The flow label a ring write from `rank` to `peer` carries: the 2-hop label for an unlinked
+    /// peer the proxy forwards to, and zero for a direct link, another shape, or an invalid rank.
+    pub fn flow_label(self, rank: usize, peer: usize, world: usize) -> u32 {
+        if self == Self::Ring
+            && world > 3
+            && rank < world
+            && peer < world
+            && peer != rank
+            && !self.linked(rank, peer, world)
+        {
+            TWO_HOP_FLOW_LABEL
+        } else {
+            0
         }
     }
 }
@@ -656,6 +674,21 @@ mod tests {
 
     #[test]
     fn variable_size_rings_route_only_neighbors_on_physical_and_switched_fabrics() {
+        assert_eq!(TWO_HOP_FLOW_LABEL, 16383);
+        assert_eq!(Shape::Ring.flow_label(0, 2, 4), TWO_HOP_FLOW_LABEL);
+        assert_eq!(Shape::Ring.flow_label(1, 3, 4), TWO_HOP_FLOW_LABEL);
+        assert_eq!(Shape::Ring.flow_label(2, 0, 4), TWO_HOP_FLOW_LABEL);
+        assert_eq!(Shape::Ring.flow_label(3, 1, 4), TWO_HOP_FLOW_LABEL);
+        assert_eq!(Shape::Ring.flow_label(0, 1, 4), 0);
+        assert_eq!(Shape::Ring.flow_label(0, 3, 4), 0);
+        assert_eq!(Shape::Ring.flow_label(0, 0, 4), 0);
+        assert_eq!(Shape::Mesh.flow_label(0, 2, 4), 0);
+        assert_eq!(Shape::Chain.flow_label(0, 2, 4), 0);
+        for world in [0, 1, 2, 3] {
+            assert_eq!(Shape::Ring.flow_label(0, world, world), 0);
+        }
+        assert_eq!(Shape::Ring.flow_label(4, 1, 4), 0);
+        assert_eq!(Shape::Ring.flow_label(0, 4, 4), 0);
         for world in [2, 3, 4, 5, 6, 8, 16] {
             for switched in [false, true] {
                 let endpoints: Vec<Vec<Endpoint>> = (0..world)
