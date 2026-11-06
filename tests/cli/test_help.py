@@ -44,6 +44,14 @@ def test_export_rejects_history_preferences_and_copy_only_preparation(flags):
     assert error.value.code == 2
 
 
+def test_prefix_cache_states_flag_parses_for_export_and_debug_serve():
+    for command in ("export", "debug-serve"):
+        arguments = [command, "deepseek-v4.1-flash"]
+        assert _parser().parse_args(arguments).prefix_cache_states is None
+        explicit = _parser().parse_args([*arguments, "--prefix-cache-states", "512"])
+        assert explicit.prefix_cache_states == 512
+
+
 @pytest.mark.parametrize("command", ["export", "debug-serve"])
 def test_mla_arithmetic_flag_defaults_and_override(command):
     arguments = [command, "deepseek-v4.1-flash"]

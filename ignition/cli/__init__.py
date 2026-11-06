@@ -69,9 +69,6 @@ def _parser() -> argparse.ArgumentParser:
                                 " an export publishes all ranks to the shared model cache on rank zero")
         hosts.add_argument("--rendezvous", metavar="ADDR:PORT",
                            help="IPv4 address and port on which rank zero admits its peers")
-    serving.add_argument("--prefix-cache-states", type=int, metavar="N",
-                         help="advanced: cached request states kept resident for prefix reuse; fewer leave more"
-                              " memory for KV pages (default: sized from free memory)")
     serving.add_argument("--history-drafts", action=argparse.BooleanOptionalAction, default=None,
                          help="augment learned drafts with continuations from shared decoded history;"
                               " requires prepared history inputs (default: off)")
@@ -161,6 +158,9 @@ def _preparation_arguments(running, *, model_default="defaults.model"):
     capacity.add_argument("--mixed-prefill", action="store_true",
                           help="capture graphs combining prompt prefill with decode or verification"
                                " (Qwen only; default: disabled)")
+    capacity.add_argument("--prefix-cache-states", type=int, metavar="N",
+                          help="advanced: cached request states kept resident for prefix reuse; fewer leave more"
+                               " memory for KV pages (default: sized from free memory)")
     speculative = running.add_argument_group("speculative decoding",
         "MTP flags configure speculative decoding, including DSpark and DFlash.\n"
         "Recipe defaults and limits: ignition export MODEL --help.")
