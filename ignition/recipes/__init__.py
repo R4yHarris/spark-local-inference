@@ -162,7 +162,13 @@ def _supporting(config_path: Path, source: str) -> tuple[Recipe, Checkpoint]:
 
 def _stored_bytes(index_path: Path, source: str) -> int:
     try:
-        stored = json.loads(index_path.read_text())["metadata"]["total_size"]
+        data = json.loads(index_path.read_text())
+        if (isinstance(data.get("metadata"), dict) and "total_size" not in data["metadata"]
+                and isinstance(data.get("weight_map"), dict) and data["weight_map"]):
+            stored = sum((index_path.parent / shard).stat().st_size
+                         for shard in set(data["weight_map"].values()))
+        else:
+            stored = data["metadata"]["total_size"]
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise UsageError(f"{source} has no readable model.safetensors.index.json total_size") from error
     if type(stored) is not int or stored <= 0:

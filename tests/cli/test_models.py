@@ -228,6 +228,56 @@ def test_local_export_requires_valid_size(tmp_path, size):
         resolve(str(tmp_path)).verify(HUB)
 
 
+def test_directory_without_index_total_size_sums_shard_files(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["Glm5NextForConditionalGeneration"]}))
+    (tmp_path / "model-00001-of-00001.safetensors").write_bytes(b"\0" * 1024)
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "metadata": {}, "weight_map": {"w": "model-00001-of-00001.safetensors"}}))
+    local = resolve(str(tmp_path))
+    assert local.checkpoint.stored_bytes == 1024
+
+
+def test_index_total_size_sums_each_unique_shard_once(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["Glm5NextForConditionalGeneration"]}))
+    (tmp_path / "one.safetensors").write_bytes(b"\0" * 512)
+    (tmp_path / "two.safetensors").write_bytes(b"\0" * 256)
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "metadata": {},
+        "weight_map": {"a": "one.safetensors", "b": "one.safetensors", "c": "two.safetensors"}}))
+    assert resolve(str(tmp_path)).checkpoint.stored_bytes == 768
+
+
+def test_index_total_size_still_preferred_over_shard_files(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["Glm5NextForConditionalGeneration"]}))
+    (tmp_path / "one.safetensors").write_bytes(b"\0" * 512)
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "metadata": {"total_size": 4096},
+        "weight_map": {"a": "one.safetensors", "b": "one.safetensors"}}))
+    assert resolve(str(tmp_path)).checkpoint.stored_bytes == 4096
+
+
+@pytest.mark.parametrize("weight_map", [None, {}, [], "shard"])
+def test_index_without_total_size_requires_a_weight_map(tmp_path, weight_map):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["Glm5NextForConditionalGeneration"]}))
+    index = {"metadata": {}} if weight_map is None else {"metadata": {}, "weight_map": weight_map}
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
+    with pytest.raises(UsageError, match="has no readable model.safetensors.index.json total_size"):
+        resolve(str(tmp_path))
+
+
+def test_index_without_total_size_requires_readable_shards(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["Glm5NextForConditionalGeneration"]}))
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "metadata": {}, "weight_map": {"a": "missing.safetensors"}}))
+    with pytest.raises(UsageError, match="has no readable model.safetensors.index.json total_size"):
+        resolve(str(tmp_path))
+    (tmp_path / "empty.safetensors").touch()
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "metadata": {}, "weight_map": {"a": "empty.safetensors"}}))
+    with pytest.raises(UsageError, match="invalid safetensors total_size: 0"):
+        resolve(str(tmp_path))
+
+
 def test_declared_ranges_are_consistent():
     assert len(set(aliases())) == len(aliases())
     for recipe in recipes():
