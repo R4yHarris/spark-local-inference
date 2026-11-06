@@ -18,6 +18,45 @@ from ignition import patches
 
 _DLL_DIRECTORIES = []
 
+# b12x's RoCE v2 preparation defaults to GID index 3, which holds an IPv6 GID on hosts that
+# register the IPv4-mapped one elsewhere. These are the indices the kernel assigns to the
+# RoCE v2 GID table, so index 3 is tried first and the rest in ascending order.
+_GID_INDEX_CANDIDATES = (3, *(index for index in range(16) if index != 3))
+_IPV4_GID_PREFIX = "0000:0000:0000:0000:0000:ffff:"
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def _ipv4_roce_v2_gids(port: Path) -> set[int]:
+    """The GID indices of an active port whose entry is an IPv4-mapped RoCE v2 address."""
+    return {index for index in range(16)
+            if (_read(port / "gid_attrs/types" / str(index)) or "").strip() == "RoCE v2"
+            and (_read(port / "gids" / str(index)) or "").strip().lower().startswith(_IPV4_GID_PREFIX)}
+
+
+def roce_gid_index(root: Path = Path("/sys/class/infiniband")) -> int | None:
+    """The GID index b12x should prepare RoCE v2 collectives with, or `None` when no active port
+    exposes an IPv4-mapped RoCE v2 GID. Index 3 is preferred; ports that disagree fall back to the
+    first port's index so a single value still describes the host."""
+    if not root.is_dir():
+        return None
+    ports = [port for port in (device / "ports/1" for device in sorted(root.iterdir()))
+             if (_read(port / "state") or "").startswith("4:")]
+    discovered = {port: _ipv4_roce_v2_gids(port) for port in ports}
+    discovered = {port: indices for port, indices in discovered.items() if indices}
+    if not discovered:
+        return None
+    shared = set.intersection(*discovered.values())
+    for index in _GID_INDEX_CANDIDATES:
+        if index in shared:
+            return index
+    return min(next(iter(discovered.values())))
+
 
 def flashinfer_workspace(kernel_cache: Path) -> Path:
     """Separate JIT build directories for independently editable installations."""
@@ -45,6 +84,12 @@ def apply(configuration, gpus, b12x=()) -> None:
         "TORCHINDUCTOR_CACHE_DIR": str(kernel_cache / "inductor"),
         **dict(b12x),
     })
+    # b12x's RoCE v2 default index is wrong on hosts whose IPv4 GID lives elsewhere; an inherited
+    # index from the operator or from NCCL is left alone.
+    if not ({"B12X_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX"} & os.environ.keys()):
+        index = roce_gid_index()
+        if index is not None:
+            os.environ["B12X_ROCE_GID_INDEX"] = str(index)
     # cuTile discovers its compiler bundle independently of the native toolkit.
     cuda = configuration.directory("cuda")
     if cuda is not None:

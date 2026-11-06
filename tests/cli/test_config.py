@@ -6,6 +6,8 @@
 
 import pytest
 
+from pathlib import Path
+
 from ignition.cli.config import Configuration, Setting, parse_size
 from ignition.errors import UsageError
 
@@ -210,3 +212,128 @@ def test_shutdown_drain_configuration(tmp_path, value):
 def test_invalid_shutdown_drain_configuration(tmp_path, value):
     with pytest.raises(UsageError, match="drain_on_shutdown"):
         load(tmp_path, f'[prefix_cache]\ndrain_on_shutdown = "{value}"\n')
+
+
+def _roce_port(root, device, gids):
+    """Write an active port whose `gids` maps index to (type, GID) for the sysfs reader. Rewriting a
+    port replaces its GID files so a test can reuse a device name with a different table."""
+    port = root / device / "ports/1"
+    for table in ("gid_attrs/types", "gids"):
+        (port / table).mkdir(parents=True, exist_ok=True)
+        for stale in (port / table).iterdir():
+            stale.unlink()
+    (port / "state").write_text("4: ACTIVE\n")
+    for index, (kind, gid) in gids.items():
+        (port / "gid_attrs/types" / str(index)).write_text(f"{kind}\n")
+        (port / "gids" / str(index)).write_text(f"{gid}\n")
+    return port
+
+
+IPV4 = ("RoCE v2", "0000:0000:0000:0000:0000:ffff:0ac8:010c")
+IPV6 = ("RoCE v2", "0000:0000:0000:0000:0000:0000:0000:0000")
+
+
+def test_roce_gid_index_prefers_three_and_falls_back_to_ipv4_roce_v2(tmp_path):
+    from ignition.cli.environment import roce_gid_index
+
+    assert roce_gid_index(tmp_path) is None
+    assert roce_gid_index(tmp_path / "absent") is None
+
+    _roce_port(tmp_path, "rocep1s0f0", {3: ("IB/RoCE v1", IPV4[1]), 5: IPV4})
+    assert roce_gid_index(tmp_path) == 5
+
+    _roce_port(tmp_path, "rocep1s0f1", {3: IPV4, 5: IPV4})
+    # The first port lacks an IPv4 GID at index 3, so only index 5 is shared.
+    assert roce_gid_index(tmp_path) == 5
+
+    _roce_port(tmp_path, "rocep1s0f0", {3: IPV4, 5: IPV4})
+    assert roce_gid_index(tmp_path) == 3
+
+
+def test_roce_gid_index_requires_every_active_roce_v2_port_to_share_the_index(tmp_path):
+    from ignition.cli.environment import roce_gid_index
+
+    _roce_port(tmp_path, "rocep1s0f0", {5: IPV4})
+    _roce_port(tmp_path, "rocep1s0f1", {6: IPV4})
+    # No index is shared by every IPv4 RoCE v2 port, so the first discovered port's index wins.
+    assert roce_gid_index(tmp_path) == 5
+
+    # An index held by only some ports is not shared, so index 3 is not chosen.
+    _roce_port(tmp_path, "rocep1s0f2", {3: IPV4})
+    _roce_port(tmp_path, "rocep1s0f3", {3: IPV4})
+    assert roce_gid_index(tmp_path) == 5
+
+    # Once every IPv4 RoCE v2 port agrees on index 3, it is preferred.
+    _roce_port(tmp_path, "rocep1s0f0", {3: IPV4})
+    _roce_port(tmp_path, "rocep1s0f1", {3: IPV4})
+    assert roce_gid_index(tmp_path) == 3
+
+
+def test_roce_gid_index_ignores_inactive_ports_and_unreadable_files(tmp_path):
+    from ignition.cli.environment import roce_gid_index
+
+    port = _roce_port(tmp_path, "rocep1s0f0", {5: IPV4})
+    (port / "state").write_text("1: DOWN\n")
+    assert roce_gid_index(tmp_path) is None
+
+    (port / "state").write_text("4: ACTIVE\n")
+    (port / "gid_attrs/types" / "5").unlink()
+    assert roce_gid_index(tmp_path) is None
+
+    (port / "gid_attrs/types" / "5").write_text("RoCE v2\n")
+    (port / "gids" / "5").unlink()
+    assert roce_gid_index(tmp_path) is None
+
+    # An IPv6 RoCE v2 GID and a non-v2 IPv4 GID are not candidates.
+    (port / "gids" / "5").write_text(IPV6[1])
+    assert roce_gid_index(tmp_path) is None
+    (port / "gids" / "5").write_text(IPV4[1])
+    (port / "gid_attrs/types" / "5").write_text("IB/RoCE v1\n")
+    assert roce_gid_index(tmp_path) is None
+
+    (port / "gid_attrs/types" / "5").write_text("RoCE v2\n")
+    assert roce_gid_index(tmp_path) == 5
+
+
+def test_roce_gid_index_checks_three_before_lower_and_higher_indices(tmp_path):
+    from ignition.cli.environment import roce_gid_index
+
+    _roce_port(tmp_path, "rocep1s0f0", {0: IPV4, 1: IPV4, 3: IPV4})
+    assert roce_gid_index(tmp_path) == 3
+
+    _roce_port(tmp_path, "rocep1s0f0", {2: IPV4, 4: IPV4})
+    assert roce_gid_index(tmp_path) == 2
+
+
+def test_environment_sets_b12x_roce_gid_index_only_without_an_inherited_index(monkeypatch, tmp_path):
+    import os
+    from ignition.cli.config import Configuration
+    from ignition.cli import environment
+
+    monkeypatch.setattr(environment.patches, "apply", lambda: ())
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = tmp_path / "config.toml"
+    path.write_text("")
+    root = tmp_path / "infiniband"
+    _roce_port(root, "rocep1s0f0", {5: IPV4})
+    monkeypatch.setattr(environment, "roce_gid_index", lambda root=Path("/sys/class/infiniband"): 5)
+
+    for name in ("B12X_ROCE_GID_INDEX", "NCCL_IB_GID_INDEX"):
+        monkeypatch.delenv(name, raising=False)
+    environment.apply(Configuration.load(path), ())
+    assert os.environ["B12X_ROCE_GID_INDEX"] == "5"
+
+    monkeypatch.setenv("B12X_ROCE_GID_INDEX", "7")
+    environment.apply(Configuration.load(path), ())
+    assert os.environ["B12X_ROCE_GID_INDEX"] == "7"
+
+    monkeypatch.delenv("B12X_ROCE_GID_INDEX", raising=False)
+    monkeypatch.setenv("NCCL_IB_GID_INDEX", "9")
+    environment.apply(Configuration.load(path), ())
+    assert "B12X_ROCE_GID_INDEX" not in os.environ
+    assert os.environ["NCCL_IB_GID_INDEX"] == "9"
+
+    monkeypatch.delenv("NCCL_IB_GID_INDEX", raising=False)
+    monkeypatch.setattr(environment, "roce_gid_index", lambda root=Path("/sys/class/infiniband"): None)
+    environment.apply(Configuration.load(path), ())
+    assert "B12X_ROCE_GID_INDEX" not in os.environ
