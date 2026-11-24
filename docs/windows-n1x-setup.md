@@ -162,8 +162,12 @@ From the dev shell (which sets `PYO3_CROSS_PYTHON_VERSION=3.12`,
 cross-build and the vendored OpenSSL configure dies):
 
 ```bat
-cargo build --locked --release --manifest-path heliopause\Cargo.toml
+cargo build --locked --release --target x86_64-pc-windows-msvc --manifest-path heliopause\Cargo.toml
 ```
+
+Pass `--target` explicitly: on the ARM64 host a bare `cargo build` builds the
+host `aarch64-pc-windows-msvc` target, and the extension must be x64 to load
+under the x64 interpreter.
 
 Note on `--locked`: at the validated base commit `heliopause/Cargo.lock` was
 stale and cargo refused `--locked` ("cannot update the lock file"); the
@@ -293,15 +297,23 @@ are released.
 
 ## Test commands that prove the port
 
+The fast Windows reproduction for the commit-path defects is the cache suite:
+
 ```bat
 cargo test --manifest-path helios/Cargo.toml --target x86_64-pc-windows-msvc --features runtime-package --lib package::cache
-cargo test --locked --release --manifest-path flare/Cargo.toml
-.venv\Scripts\python.exe -m pytest tests\preparation -q
 ```
 
-The cache tests are the fast reproduction for the Windows commit-path defects
-(38 failures before the fixes, 72 passed / 0 failed / 1 ignored after). See
-`docs/windows.md` for the general Windows build/test lane.
+(38 failures before the fixes, 72 passed / 0 failed / 1 ignored after — see
+`docs/windows.md` for the general Windows build/test lane.) The preparation
+pytest suite is the Linux-side lane: two modules (`test_export_transfer.py`,
+`test_host_ranks.py`) import POSIX-only `resource`/`fcntl` and cannot
+collect, and several modules (measured at the validated base: 12 of the 26
+`test_inductor_patches.py` tests) assert against synthesized Linux triton
+fixtures — the patch table itself applies to the real triton-windows
+environment, which is what the completed exports exercise. Treat the full
+preparation suite as the Linux-side lane (the port's submission validation
+measured 38 preparation tests passing, 1 skipped, on Linux) and do not
+chase Windows fixture failures as port defects.
 
 ## Native ARM64 stack (separate, partial)
 
