@@ -22,7 +22,7 @@ upstream" for why):
 |---|---|
 | Fork | `https://github.com/R4yHarris/spark-local-inference` |
 | Branch | `windows-n1x-validated` |
-| Validated tip | `75bca4ba` plus the lockfile-sync and docs commits on this branch |
+| Validated tip | `fac22e27` (branch `windows-n1x-validated`; = base + 14 port commits + 7 reproducibility commits) |
 | Upstream base | `34443322` ("Keep self-reading complete copies in program order", #158) |
 | Model prepared | `nvidia/Qwen3.8-Flash-Next-FP4-Local` @ `b9ce18a6` (~111 GB cache) |
 
