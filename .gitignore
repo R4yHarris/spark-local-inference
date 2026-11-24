@@ -7,3 +7,6 @@ __pycache__/
 /dist/
 /cufile.log
 /.claude/worktrees/
+
+/serve-*.log
+/serve-*.log.prev
