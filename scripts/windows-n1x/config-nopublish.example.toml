@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scratch configuration for an unattended export. Copy beside a directory of
+# your choosing, e.g. C:\flare-scratch\config-nopublish.toml, and pass it with
+# `ignition export <alias> --config C:\flare-scratch\config-nopublish.toml`.
+#
+# Deliberately carries NO [publishing] section: that is what stops the export
+# from prompting for the signing passphrase, which needs a TTY and cannot be
+# driven unattended. The package is signed by a development identity created
+# beside this config; promote it afterwards with `ignition sign`.
+#
+# WARNING: a --config outside ~/.config/flare creates its own development
+# signing identity beside the config file (development-publisher.json +
+# development-signing-key.pem). `flare run`/`inspect` must then be given
+# that profile with --publisher-keys, or they stop at Verify package with
+# "package signer is not a configured publisher".
+
+[paths]
+cuda = "C:\\CUDA\\v13.4\\nvcc"
