@@ -6,3 +6,9 @@ packaging/license-supplements/** -text
 # result_sha256 over the annotated source, and the Kimi template is embedded with
 # include_str! and split on "#}\n". A CRLF checkout breaks both, so keep LF.
 ignition/recipes/*/assets/*.jinja text eol=lf
+
+scripts/windows-n1x/*.cmd text eol=crlf
+scripts/windows-n1x/*.bat text eol=crlf
+scripts/windows-n1x/dev-env.sh text eol=lf
+scripts/windows-n1x/requirements.windows-n1x.txt text eol=lf
+scripts/windows-n1x/*.toml text eol=lf
